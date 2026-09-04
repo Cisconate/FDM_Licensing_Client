@@ -1,0 +1,25 @@
+# Keep this repository limited to files stored at its top level.
+/*/
+
+# Python-generated files (also covered by the directory rule above).
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Virtual environments.
+.venv/
+venv/
+env/
+
+# Local configuration and credentials.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Operating-system files.
+.DS_Store
+Thumbs.db
