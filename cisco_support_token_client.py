@@ -11,11 +11,13 @@ the bearer token string for downstream API clients.
 
 from __future__ import annotations
 
+import argparse
 import threading
 import time
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import requests
 from requests import Response, Session
@@ -222,8 +224,66 @@ class CiscoSupportTokenClient:
             return
         self.session.close()
         self._token = None
+        self._client_id = ""
+        self._client_secret = ""
         self._closed = True
 
     def _ensure_open(self) -> None:
         if self._closed:
             raise CiscoSupportTokenError("CiscoSupportTokenClient is closed")
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse the standalone token-client diagnostic options."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Cisco Support OAuth token client. Credentials are read from the "
+            "operating-system credential store."
+        )
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help=(
+            "request a token to validate stored credentials without displaying "
+            "the credentials or token"
+        ),
+    )
+    args = parser.parse_args(argv)
+    if not args.check:
+        parser.error("--check is required")
+    return args
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run a non-mutating live authentication check against Cisco OAuth."""
+    parse_args(argv)
+
+    # Keep credential storage optional for library users and avoid coupling at
+    # module import time.
+    from key_manager import KeyManager, KeyManagerError
+
+    client: CiscoSupportTokenClient | None = None
+    try:
+        credentials = KeyManager().get_cisco_credentials()
+        client = CiscoSupportTokenClient(
+            client_id=credentials.client_id,
+            client_secret=credentials.client_secret,
+        )
+        token = client.authenticate()
+        print(
+            "Cisco authentication succeeded "
+            f"(token type: {token.token_type}, scope present: "
+            f"{'yes' if token.scope else 'no'})."
+        )
+        return 0
+    except (KeyManagerError, CiscoSupportTokenError, ValueError) as exc:
+        print(f"Cisco authentication failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if client is not None:
+            client.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

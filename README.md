@@ -108,14 +108,15 @@ revocation and session cleanup on exit.
 token can be supplied dynamically to `CiscoPlrReservationClient`:
 
 ```python
-import os
-
 from cisco_support_api_client import CiscoPlrReservationClient
 from cisco_support_token_client import CiscoSupportTokenClient
+from key_manager import KeyManager
+
+credentials = KeyManager().get_cisco_credentials()
 
 with CiscoSupportTokenClient(
-    client_id=os.environ["CISCO_CLIENT_ID"],
-    client_secret=os.environ["CISCO_CLIENT_SECRET"],
+    client_id=credentials.client_id,
+    client_secret=credentials.client_secret,
 ) as tokens:
     with CiscoPlrReservationClient(
         token_provider=tokens.get_bearer_token,
@@ -128,6 +129,19 @@ with CiscoSupportTokenClient(
 
 The reservation route and payload depend on the approved Cisco API workflow;
 the client deliberately does not guess them.
+
+For secure cross-platform credential storage, use `key_manager.py`. It stores
+the Cisco Client ID and Client Secret in the native OS credential store and
+never prints stored values:
+
+```bash
+python key_manager.py store
+python key_manager.py status
+python cisco_support_token_client.py --check
+```
+
+See [CREDENTIAL_MANAGEMENT.md](CREDENTIAL_MANAGEMENT.md) for platform support,
+macOS Keychain setup, application integration, and testing guidance.
 
 ## Project layout
 
