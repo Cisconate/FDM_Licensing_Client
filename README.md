@@ -150,6 +150,7 @@ macOS Keychain setup, application integration, and testing guidance.
 | `fdm_client.py` | Authenticated FDM REST client |
 | `fdm_certificate_store.py` | Certificate bundle bootstrap and lookup |
 | `example.py` | Command-line FDM example |
+| `key_manager.py` | Native OS storage for Cisco client credentials |
 | `cisco_support_token_client.py` | Cisco OAuth2 token acquisition and caching |
 | `cisco_support_api_client.py` | Smart Licensing/PLR request client |
 | `security_validation.py` | Shared trust-boundary validation and safe encoding |
@@ -157,6 +158,10 @@ macOS Keychain setup, application integration, and testing guidance.
 | `test_*.py` | Unit tests plus the conditional live OAuth test |
 | `TESTING.md` | Local, CI, and agent-generated testing policy |
 | `SECURITY.md` | Input-boundary inventory and coding standard |
+
+For implementation work, start with the responsibility map in `AGENTS.md`.
+It identifies the owning module, public API, associated tests, and detailed
+policy document so focused changes do not require reading every source file.
 
 ## Automated tests and CI
 

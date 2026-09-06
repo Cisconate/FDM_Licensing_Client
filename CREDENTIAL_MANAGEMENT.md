@@ -114,11 +114,16 @@ guess them or use a mutating reservation request merely to test authentication.
 
 ## Testing and future work
 
-Offline tests use a mock store and never contact Cisco:
+The suite includes mocked credential-store tests. When a complete real
+credential pair is available, it also performs the conditional live Cisco OAuth
+test:
 
 ```bash
 python -m unittest -v
 ```
+
+Use `python -m unittest -v test_key_manager` when an explicitly mock-only
+credential test run is needed.
 
 For an authorized live check, run `status`, retrieve credentials through
 `KeyManager`, and request a token. Report only success and expiry metadata;

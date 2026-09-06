@@ -1,5 +1,19 @@
 # Contributor and Agent Guide
 
+## Document authority and starting point
+
+Read this file first. Its contributor requirements and security rules are
+mandatory. Use the following documents for detail:
+
+1. `SECURITY.md` owns trust-boundary, validation, and output-encoding rules.
+2. `TESTING.md` owns mocked and live-test construction and execution.
+3. `CREDENTIAL_MANAGEMENT.md` owns credential storage and retrieval.
+4. `README.md` describes supported behavior and routes work to modules.
+
+For a code change, inspect the routed module, its directly imported project
+modules, and its associated tests. A repository-wide read is unnecessary unless
+the requested behavior crosses those boundaries.
+
 ## Project scope
 
 This repository contains standalone Python modules for:
@@ -11,6 +25,25 @@ This repository contains standalone Python modules for:
 
 Keep endpoint-specific payloads and policy decisions in calling code unless a
 well-documented, reusable interface is intentionally added.
+
+The project remains a small collection of synchronous Python modules until a
+packaging or asynchronous API change is explicitly requested. Preserve public
+constructor and method behavior unless the change intentionally documents a
+compatibility break. Do not invent Cisco endpoint paths, payload schemas, or
+version policy.
+
+## Change routing
+
+| Responsibility | Primary module/API | Tests and related guidance |
+| --- | --- | --- |
+| Local FDM authentication and REST | `fdm_client.py` / `FDMClient` | `test_security_validation.py`; add focused FDM tests; `SECURITY.md` |
+| FDM certificate bootstrap | `fdm_certificate_store.py` | `test_security_validation.py`; add focused certificate tests; `SECURITY.md` |
+| Cisco OAuth token generation | `cisco_support_token_client.py` / `CiscoSupportTokenClient` | `test_key_manager.py`, `test_live_cisco_token.py`; credential guide |
+| Cisco credential storage | `key_manager.py` / `KeyManager` | `test_key_manager.py`; credential guide |
+| Smart Licensing requests | `cisco_support_api_client.py` / `CiscoPlrReservationClient` | `test_key_manager.py`, `test_security_validation.py`; add endpoint tests; `SECURITY.md` |
+| Shared boundary validation | `security_validation.py` | `test_security_validation.py`; `SECURITY.md` |
+| CLI/environment behavior | `example.py` and module `main` functions | Add or update focused CLI tests; README |
+| CI and agent test policy | `.github/workflows`, `TESTING.md` | Pull-request template |
 
 ## Security invariants
 
@@ -48,14 +81,19 @@ co-develop boundary tests and update the boundary inventory when appropriate.
 5. Run `python -m unittest discover -v` before considering a change complete.
 6. Before committing, inspect `git diff --cached` and scan for secrets.
 
-Do not perform live authentication or device-changing requests in automated
-tests. Use mocks or controlled fixtures, and never record real credentials or
-tokens in test data.
+Use mocks or controlled fixtures for every feature and bug fix; never record
+real credentials or tokens in test data. In addition, run applicable live tests
+when the current system has the complete credentials and non-secret endpoint
+configuration required by that module. A live test supplements mocked tests and
+never replaces them.
 
-The sole exception is the manually dispatched Cisco OAuth integration workflow
-documented in `TESTING.md`. Keep it separate from push and pull-request CI,
-read credentials only from the protected GitHub Environment, and perform token
-acquisition only. Do not add live licensing or device-changing calls to it.
+Live tests may authenticate and use documented read-only operations. Do not add
+live mutating licensing or device-changing calls unless the user explicitly
+authorizes the exact test, endpoint, target, and cleanup behavior. Read local
+credentials through the approved OS credential store. Hosted workflows must
+read credentials from protected CI secrets. A missing credential or endpoint
+causes a clearly reported skip; an available but invalid credential causes a
+test failure. Report live-test pass, failure, or skip status in the final result.
 
 When a request includes `Test requirement: <behavior>` or `[test-required]`,
 treat the stated behavior as an acceptance criterion. Add or update a focused

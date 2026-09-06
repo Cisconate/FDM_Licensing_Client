@@ -29,6 +29,12 @@ reside outside the project. Generated `bundle_name` values must be plain
 filenames. Endpoint-specific payload schemas remain the caller's responsibility;
 the shared clients enforce valid JSON syntax and a bounded request size.
 
+Current shared limits are a 2 MiB JSON request body, a 2 MiB certificate bundle,
+300 seconds for each configured request-timeout value, one year for a returned
+token lifetime, 1,000 query parameters, 1,000 characters of provider error
+text, and bounded credential, token, header, path, and user-agent lengths. A
+limit change is a security-policy change and requires boundary tests.
+
 ## Coding requirements
 
 For every new or changed external input, document its source, accepted type and

@@ -1,7 +1,7 @@
 # Testing guide
 
-This project uses Python's built-in `unittest` framework. The same suite runs
-locally, in PyCharm, and in GitHub Actions:
+This project uses Python's built-in `unittest` framework. The discovered suite
+runs locally, in PyCharm, and in GitHub Actions:
 
 ```bash
 python -m unittest discover -v
@@ -11,7 +11,8 @@ Test files use the top-level `test_*.py` naming convention. Test methods should
 name the observable behavior they protect, such as
 `test_absolute_request_path_is_rejected_before_network_call`.
 
-The discovered suite also includes `test_live_cisco_token.py`. It reads Cisco
+The suite contains deterministic mocked tests and conditional live integration
+tests. `test_live_cisco_token.py` reads Cisco
 credentials from environment variables when GitHub injects them, otherwise it
 checks the native operating-system credential store. It performs one real OAuth
 request when a complete credential pair exists and skips when none exists.
@@ -27,9 +28,9 @@ Test requirement: an HTTP 401 causes exactly one re-authentication attempt.
 
 Each `Test requirement:` line is an acceptance criterion. The implementation
 and its test are one change: the agent must add or update a focused test, run
-the full suite, and report the command and result. This marker is useful when a
-specific scenario matters, but observable behavior changes and bug fixes need
-tests by default under `AGENTS.md`.
+the full suite, and report mocked and live results separately. This marker is
+useful when a specific scenario matters, but observable behavior changes and
+bug fixes need mocked tests by default under `AGENTS.md`.
 
 A useful feature request is concrete about inputs, outputs, and side effects:
 
@@ -52,8 +53,13 @@ Test requirement: secrets and bearer tokens never appear in logs or errors.
   return values and raised exceptions.
 - For a bug fix, first add a regression test that demonstrates the failure when
   practical, then implement the fix.
-- Never contact a live FDM device, Cisco API, or operating-system credential
-  store from an automated test.
+- Keep mocked tests deterministic and isolated from networks, live devices,
+  external APIs, and operating-system credential stores.
+- Add or update a conditional live test when a feature depends on behavior that
+  only the real service can verify. It must skip only when required credentials
+  or endpoint configuration are absent.
+- Limit routine live tests to authentication and documented read-only requests.
+  Mutating live tests require explicit authorization for the exact operation.
 - Never place real credentials, tokens, certificates, or customer data in test
   code or fixtures.
 
@@ -63,10 +69,11 @@ Run the suite locally before pushing for fast feedback. In PyCharm, create a
 Python test configuration for `Unittests` with the project directory as the
 target, or run an individual test from the gutter icon.
 
-GitHub Actions is the shared, authoritative run. `.github/workflows/tests.yml`
-runs the suite on every push and pull request using the oldest supported Python
-version and a current Python version. Configure the repository's protected
-branch to require both matrix checks before merging.
+GitHub Actions provides the shared clean-environment run.
+`.github/workflows/tests.yml` runs the discovered suite on every push and pull
+request using the oldest supported Python version and a current Python version.
+Live tests skip there when protected credentials are unavailable. Configure the
+repository's protected branch to require both matrix checks before merging.
 
 ## Live Cisco OAuth integration test
 
@@ -90,17 +97,25 @@ GitHub does not prompt for secret values when a workflow starts. The secrets
 must already exist in the Environment; GitHub supplies them to the job after
 any Environment protection rules are satisfied.
 
-This integration workflow is manual and separate from required push/PR checks.
-That keeps secrets unavailable to untrusted pull-request code and prevents an
-external outage, expired credential, or API limit from blocking every commit.
-The test validates token generation only; a real licensing API call requires a
-documented read-only endpoint and separate integration test.
+This workflow is manual and separate from required push/PR checks so protected
+credentials are not exposed to untrusted pull-request code. Once credentials
+are supplied, invalid credentials or Cisco OAuth failures fail the live test.
+The current test validates token generation only; a real licensing API call
+requires a documented read-only endpoint and separate integration test.
 
 On a developer workstation, `python -m unittest discover -v` checks the native
 keyring automatically. If the credentials were stored with `python
 key_manager.py store`, the live token test runs alongside the mocked tests. If
 they are absent, the live test reports `skipped`. A GitHub-hosted runner cannot
 read the Windows Credential Manager on the computer that pushed the commit.
+
+Every test report must distinguish these outcomes:
+
+- Mocked tests: passed or failed.
+- Applicable live tests: passed, failed, or skipped with the missing
+  configuration identified without exposing its value.
+- A skip is expected only when required configuration is absent. Service errors
+  and rejected credentials are failures when the configuration exists.
 
 CI configuration belongs in the repository because it is reviewed and versioned
 with the code, applies consistently to every contributor, and can be reproduced
