@@ -9,6 +9,8 @@ mandatory. Use the following documents for detail:
 2. `TESTING.md` owns mocked and live-test construction and execution.
 3. `CREDENTIAL_MANAGEMENT.md` owns credential storage and retrieval.
 4. `README.md` describes supported behavior and routes work to modules.
+5. `ROADMAP.md` records desired future enhancements and priorities. A roadmap
+   entry is not approval to invent an API contract or perform a live change.
 
 For a code change, inspect the routed module, its directly imported project
 modules, and its associated tests. A repository-wide read is unnecessary unless
@@ -47,6 +49,7 @@ paths, payload schemas, or version policy.
 | Shared application workflows | `fdm_licensing/services.py` | `test_application.py` |
 | CLI commands and desktop menu | `fdm_licensing/cli.py`, `fdm_licensing/gui` | `test_application.py`; `PACKAGING.md` |
 | Capability registration | `fdm_licensing/capabilities.py` | `test_application.py` |
+| Future enhancements and priorities | `ROADMAP.md` | Create a linked issue when work is scheduled |
 
 ## Security invariants
 

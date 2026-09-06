@@ -161,6 +161,7 @@ macOS Keychain setup, application integration, and testing guidance.
 | `TESTING.md` | Local, CI, and agent-generated testing policy |
 | `SECURITY.md` | Input-boundary inventory and coding standard |
 | `PACKAGING.md` | Windows GUI, executable build, and extension guide |
+| `ROADMAP.md` | Categorized future enhancements and performance priorities |
 
 For implementation work, start with the responsibility map in `AGENTS.md`.
 It identifies the owning module, public API, associated tests, and detailed

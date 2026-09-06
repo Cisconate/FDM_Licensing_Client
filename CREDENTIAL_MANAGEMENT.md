@@ -147,6 +147,6 @@ read-only endpoint path. Do not substitute a reservation endpoint as a health
 check. Once the documented path is known, pass the same token client method as
 `token_provider` to `CiscoPlrReservationClient` and issue a `GET` request.
 
-Future work includes approved centralized-vault adapters for headless systems,
-an explicit read-only Cisco connectivity-check CLI, CI secret scanning, and a
-documented rotation/revocation policy.
+Centralized secret-manager adapters, a read-only Cisco connectivity-check CLI,
+CI secret scanning, and credential rotation/revocation guidance are tracked in
+[ROADMAP.md](ROADMAP.md).
