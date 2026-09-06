@@ -1,6 +1,10 @@
 # Keep this repository limited to files stored at its top level.
 /*/
 
+# Repository automation is version-controlled despite the top-level directory rule.
+!/.github/
+!/.github/**
+
 # Python-generated files (also covered by the directory rule above).
 __pycache__/
 *.py[cod]

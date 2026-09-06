@@ -31,12 +31,27 @@ well-documented, reusable interface is intentionally added.
 1. Use Python 3.10 or newer in a virtual environment.
 2. Install dependencies with `python -m pip install -r requirements.txt`.
 3. Keep changes focused and update `README.md` when public behavior changes.
-4. Add tests for new behavior when a test framework is introduced.
-5. Before committing, inspect `git diff --cached` and scan for secrets.
+4. Co-develop tests with every behavior change and bug fix. See `TESTING.md`.
+5. Run `python -m unittest discover -v` before considering a change complete.
+6. Before committing, inspect `git diff --cached` and scan for secrets.
 
 Do not perform live authentication or device-changing requests in automated
 tests. Use mocks or controlled fixtures, and never record real credentials or
 tokens in test data.
+
+The sole exception is the manually dispatched Cisco OAuth integration workflow
+documented in `TESTING.md`. Keep it separate from push and pull-request CI,
+read credentials only from the protected GitHub Environment, and perform token
+acquisition only. Do not add live licensing or device-changing calls to it.
+
+When a request includes `Test requirement: <behavior>` or `[test-required]`,
+treat the stated behavior as an acceptance criterion. Add or update a focused
+`unittest` test in the same change, use mocks at network and credential-store
+boundaries, and report the exact test command and result. Do not claim the work
+is complete while that test is missing or failing. Tests are expected for all
+observable behavior changes even when the request omits the marker. A test may
+be omitted only for documentation-only or other non-behavioral changes, and
+the final response must state why.
 
 ## Style
 

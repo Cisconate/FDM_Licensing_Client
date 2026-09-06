@@ -24,6 +24,42 @@ licensing client remains independent of credential storage.
 - Headless production: an approved centralized secret manager, not plaintext
   keyring storage
 
+## Windows Credential Manager setup
+
+From the project directory in PowerShell, activate the PyCharm virtual
+environment and run the interactive storage command:
+
+```powershell
+.venv\Scripts\Activate.ps1
+python key_manager.py store
+```
+
+Enter the Cisco Client ID at the first prompt. Enter the Cisco Client Secret at
+the second prompt; secret input is hidden. Python `keyring` stores both entries
+through the native Windows credential backend under the service name
+`fdm-client/cisco-support`.
+
+Confirm only their presence, without displaying either value:
+
+```powershell
+python key_manager.py status
+```
+
+Run all tests, including the conditional live token check:
+
+```powershell
+python -m unittest discover -v
+```
+
+Remove the stored pair when it is no longer needed:
+
+```powershell
+python key_manager.py delete
+```
+
+Windows associates the entries with the current Windows user account. Run
+PyCharm and PowerShell as the same user so both processes see the same store.
+
 OS detection does not establish security by itself, so the active backend is
 validated separately. A missing secure backend causes a closed failure and
 never silently falls back to a file or environment variable.
@@ -95,6 +131,11 @@ the licensing API and does not print the returned token or credentials:
 ```bash
 python cisco_support_token_client.py --check
 ```
+
+For a hosted live check, the manual `Cisco integration` GitHub Actions workflow
+reads `CISCO_CLIENT_ID` and `CISCO_CLIENT_SECRET` from the protected
+`cisco-integration` GitHub Environment. These are GitHub Actions secrets, not
+Git credentials. See [TESTING.md](TESTING.md) for setup and execution.
 
 A licensing portal connectivity test additionally requires the exact approved,
 read-only endpoint path. Do not substitute a reservation endpoint as a health

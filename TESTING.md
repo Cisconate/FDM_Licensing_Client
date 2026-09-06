@@ -1,0 +1,111 @@
+# Testing guide
+
+This project uses Python's built-in `unittest` framework. The same suite runs
+locally, in PyCharm, and in GitHub Actions:
+
+```bash
+python -m unittest discover -v
+```
+
+Test files use the top-level `test_*.py` naming convention. Test methods should
+name the observable behavior they protect, such as
+`test_absolute_request_path_is_rejected_before_network_call`.
+
+The discovered suite also includes `test_live_cisco_token.py`. It reads Cisco
+credentials from environment variables when GitHub injects them, otherwise it
+checks the native operating-system credential store. It performs one real OAuth
+request when a complete credential pair exists and skips when none exists.
+
+## Declaring a required test
+
+Use either of these phrases in an agent request:
+
+```text
+[test-required]
+Test requirement: an HTTP 401 causes exactly one re-authentication attempt.
+```
+
+Each `Test requirement:` line is an acceptance criterion. The implementation
+and its test are one change: the agent must add or update a focused test, run
+the full suite, and report the command and result. This marker is useful when a
+specific scenario matters, but observable behavior changes and bug fixes need
+tests by default under `AGENTS.md`.
+
+A useful feature request is concrete about inputs, outputs, and side effects:
+
+```text
+Add support for refreshing an expired cached token.
+
+[test-required]
+Test requirement: an unexpired cached token is returned without an HTTP call.
+Test requirement: an expired token causes one HTTP call and replaces the cache.
+Test requirement: secrets and bearer tokens never appear in logs or errors.
+```
+
+## Test construction rules
+
+- Exercise the public interface unless an internal security invariant cannot
+  be observed there.
+- Keep one behavior per test and use deterministic inputs.
+- Mock HTTP sessions, clocks, credential stores, and other external boundaries.
+- Assert important side effects, including call count and cleanup, as well as
+  return values and raised exceptions.
+- For a bug fix, first add a regression test that demonstrates the failure when
+  practical, then implement the fix.
+- Never contact a live FDM device, Cisco API, or operating-system credential
+  store from an automated test.
+- Never place real credentials, tokens, certificates, or customer data in test
+  code or fixtures.
+
+## Where tests run
+
+Run the suite locally before pushing for fast feedback. In PyCharm, create a
+Python test configuration for `Unittests` with the project directory as the
+target, or run an individual test from the gutter icon.
+
+GitHub Actions is the shared, authoritative run. `.github/workflows/tests.yml`
+runs the suite on every push and pull request using the oldest supported Python
+version and a current Python version. Configure the repository's protected
+branch to require both matrix checks before merging.
+
+## Live Cisco OAuth integration test
+
+Git Credential Manager stores credentials used by Git itself to access a remote
+repository. Do not put Cisco API credentials in it. GitHub-hosted jobs should
+receive application credentials from GitHub Actions secrets, preferably through
+a protected GitHub Environment.
+
+Create an Environment named `cisco-integration` in the repository's
+**Settings > Environments** page. Add these Environment secrets:
+
+- `CISCO_CLIENT_ID`
+- `CISCO_CLIENT_SECRET`
+
+For sensitive organizational credentials, restrict deployment branches and add
+required reviewers to that Environment. Then open **Actions > Cisco integration
+> Run workflow**. The workflow requests a real token and checks its basic
+metadata without printing the token or credentials.
+
+GitHub does not prompt for secret values when a workflow starts. The secrets
+must already exist in the Environment; GitHub supplies them to the job after
+any Environment protection rules are satisfied.
+
+This integration workflow is manual and separate from required push/PR checks.
+That keeps secrets unavailable to untrusted pull-request code and prevents an
+external outage, expired credential, or API limit from blocking every commit.
+The test validates token generation only; a real licensing API call requires a
+documented read-only endpoint and separate integration test.
+
+On a developer workstation, `python -m unittest discover -v` checks the native
+keyring automatically. If the credentials were stored with `python
+key_manager.py store`, the live token test runs alongside the mocked tests. If
+they are absent, the live test reports `skipped`. A GitHub-hosted runner cannot
+read the Windows Credential Manager on the computer that pushed the commit.
+
+CI configuration belongs in the repository because it is reviewed and versioned
+with the code, applies consistently to every contributor, and can be reproduced
+from a checkout. GitHub hosts the runners, so no local machine needs to remain
+online. The tradeoffs are queue time, hosted-runner limits, and some coupling to
+GitHub Actions syntax. If the project later moves to GitLab, keep the test
+command and test files unchanged and translate only the workflow into
+`.gitlab-ci.yml`.

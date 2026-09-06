@@ -153,6 +153,26 @@ macOS Keychain setup, application integration, and testing guidance.
 | `cisco_support_token_client.py` | Cisco OAuth2 token acquisition and caching |
 | `cisco_support_api_client.py` | Smart Licensing/PLR request client |
 | `requirements.txt` | Runtime dependency constraints |
+| `test_*.py` | Offline unit tests discovered by `unittest` |
+| `TESTING.md` | Local, CI, and agent-generated testing policy |
+
+## Automated tests and CI
+
+Run the complete test suite from the project root:
+
+```bash
+python -m unittest discover -v
+```
+
+The tests use mocks and do not require live FDM or Cisco credentials. GitHub
+Actions runs this command automatically on every push and pull request against
+Python 3.10 and 3.14. See [TESTING.md](TESTING.md) for PyCharm setup, branch
+protection, test-writing conventions, and the `[test-required]` agent contract.
+An additional manually triggered workflow can validate real Cisco OAuth token
+generation using secrets stored in a protected GitHub Environment.
+When the local OS credential store contains a complete Cisco credential pair,
+the same test command automatically includes that live OAuth check; otherwise
+the integration test is skipped.
 
 ## Security notes
 
@@ -169,10 +189,10 @@ macOS Keychain setup, application integration, and testing guidance.
 
 ## Development status
 
-There is not yet a packaged distribution or automated test suite. Run the
-example only against a device and account where you are authorized to perform
-the requested operations. Contributions should preserve the security
-invariants documented in `AGENTS.md`.
+There is not yet a packaged distribution. Run the example only against a device
+and account where you are authorized to perform the requested operations.
+Contributions should preserve the security invariants documented in `AGENTS.md`
+and pass the automated unit-test suite.
 
 ## License
 
