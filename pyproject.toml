@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fdm-licensing-client"
+version = "0.1.0"
+description = "Secure FDM and Cisco Smart Licensing desktop and CLI client"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.32,<3",
+    "keyring>=25.6,<26",
+]
+
+[project.optional-dependencies]
+gui = ["PySide6-Essentials>=6.10,<7"]
+build = ["PyInstaller>=6.22,<7"]
+
+[project.scripts]
+fdm-licensing = "fdm_licensing.cli:main"
+
+[project.gui-scripts]
+fdm-licensing-gui = "fdm_licensing.gui.app:main"
+
+[tool.setuptools]
+packages = ["fdm_licensing", "fdm_licensing.gui"]
+py-modules = [
+    "cisco_support_api_client",
+    "cisco_support_token_client",
+    "fdm_certificate_store",
+    "fdm_client",
+    "key_manager",
+    "security_validation",
+]

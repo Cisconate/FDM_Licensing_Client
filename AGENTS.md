@@ -26,11 +26,11 @@ This repository contains standalone Python modules for:
 Keep endpoint-specific payloads and policy decisions in calling code unless a
 well-documented, reusable interface is intentionally added.
 
-The project remains a small collection of synchronous Python modules until a
-packaging or asynchronous API change is explicitly requested. Preserve public
-constructor and method behavior unless the change intentionally documents a
-compatibility break. Do not invent Cisco endpoint paths, payload schemas, or
-version policy.
+The transport library remains synchronous. Application services coordinate
+workflows, and the CLI and GUI call those services rather than transport clients
+directly. Preserve public constructor and method behavior unless a change
+intentionally documents a compatibility break. Do not invent Cisco endpoint
+paths, payload schemas, or version policy.
 
 ## Change routing
 
@@ -44,6 +44,9 @@ version policy.
 | Shared boundary validation | `security_validation.py` | `test_security_validation.py`; `SECURITY.md` |
 | CLI/environment behavior | `example.py` and module `main` functions | Add or update focused CLI tests; README |
 | CI and agent test policy | `.github/workflows`, `TESTING.md` | Pull-request template |
+| Shared application workflows | `fdm_licensing/services.py` | `test_application.py` |
+| CLI commands and desktop menu | `fdm_licensing/cli.py`, `fdm_licensing/gui` | `test_application.py`; `PACKAGING.md` |
+| Capability registration | `fdm_licensing/capabilities.py` | `test_application.py` |
 
 ## Security invariants
 

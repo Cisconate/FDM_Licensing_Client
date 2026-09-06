@@ -4,11 +4,18 @@
 # Repository automation is version-controlled despite the top-level directory rule.
 !/.github/
 !/.github/**
+!/fdm_licensing/
+!/fdm_licensing/**
 
 # Python-generated files (also covered by the directory rule above).
 __pycache__/
 *.py[cod]
 *.pyd
+*.egg-info/
+
+# Generated packaging output.
+build/
+dist/
 
 # Virtual environments.
 .venv/

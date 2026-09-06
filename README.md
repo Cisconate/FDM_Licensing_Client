@@ -2,7 +2,8 @@
 
 A small Python client for working with Cisco Firewall Device Manager (FDM),
 plus supporting clients for Cisco Support API authentication and Smart
-Licensing reservation requests.
+Licensing reservation requests. It includes a shared CLI and Windows-first
+desktop GUI foundation.
 
 > [!IMPORTANT]
 > This project is an early-stage client, not an official Cisco SDK. Validate
@@ -154,14 +155,32 @@ macOS Keychain setup, application integration, and testing guidance.
 | `cisco_support_token_client.py` | Cisco OAuth2 token acquisition and caching |
 | `cisco_support_api_client.py` | Smart Licensing/PLR request client |
 | `security_validation.py` | Shared trust-boundary validation and safe encoding |
+| `fdm_licensing/` | Shared services, CLI, capability registry, and desktop GUI |
 | `requirements.txt` | Runtime dependency constraints |
 | `test_*.py` | Unit tests plus the conditional live OAuth test |
 | `TESTING.md` | Local, CI, and agent-generated testing policy |
 | `SECURITY.md` | Input-boundary inventory and coding standard |
+| `PACKAGING.md` | Windows GUI, executable build, and extension guide |
 
 For implementation work, start with the responsibility map in `AGENTS.md`.
 It identifies the owning module, public API, associated tests, and detailed
 policy document so focused changes do not require reading every source file.
+
+## CLI and desktop application
+
+Install the project with its GUI dependency and launch either presentation:
+
+```powershell
+python -m pip install -e ".[gui]"
+fdm-licensing capabilities
+fdm-licensing-gui
+```
+
+The desktop menu exposes the currently supported FDM and Cisco authentication
+capabilities and presents the planned FTD licensing sequence. Endpoint-specific
+reservation and authorization steps remain unavailable until their approved API
+contracts are implemented. See [PACKAGING.md](PACKAGING.md) to build unsigned
+Windows executables.
 
 ## Automated tests and CI
 

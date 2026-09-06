@@ -16,6 +16,7 @@ bodies. Never construct protocol syntax with untrusted string interpolation.
 | Boundary | Validation owner | Required treatment |
 | --- | --- | --- |
 | CLI and environment | CLI parser and client constructor | Parse strict booleans/numbers; reject invalid values with bounded errors |
+| Desktop GUI fields | Validated command-model factory | Use the same validators as the CLI; clear secret controls after submission |
 | Public constructors | Constructed client | Validate and normalize hosts, URLs, ports, timeouts, paths, credentials, and headers once |
 | Public request methods | API client `request` method | Enforce method/path/header policy; copy query mappings; validate and snapshot JSON |
 | Credential backend | `KeyManager` | Treat retrieved values as untrusted opaque strings; validate before return |
@@ -23,6 +24,11 @@ bodies. Never construct protocol syntax with untrusted string interpolation.
 | HTTP response | Receiving client | Validate status, redirects, JSON shape, required fields, field sizes, and lifetimes |
 | Filesystem | Certificate/logging component | Resolve operator paths; require plain generated filenames; reject unsafe target types and oversized bundles |
 | Logs and exceptions | Component producing output | Remove control characters, bound length, and exclude credentials, tokens, headers, and request bodies |
+
+GUI widgets and CLI parsers are presentation boundaries, not independent
+security implementations. Both create the same immutable command models before
+calling application services. Application services may trust those models;
+credential stores, callbacks, files, and HTTP responses remain external inputs.
 
 Operator-supplied CA, certificate-store, and log paths may be absolute and may
 reside outside the project. Generated `bundle_name` values must be plain

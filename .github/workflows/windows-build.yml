@@ -1,0 +1,53 @@
+name: Windows application build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Install application and build dependencies
+        run: python -m pip install ".[gui,build]"
+
+      - name: Run tests
+        run: python -m unittest discover -v
+
+      - name: Build Windows applications
+        shell: pwsh
+        run: .\build_windows.ps1
+
+      - name: Smoke test CLI executable
+        run: .\dist\fdm-licensing\fdm-licensing.exe capabilities
+
+      - name: Smoke test GUI executable
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          .\dist\FDM-Licensing-Client\FDM-Licensing-Client.exe --smoke-test
+
+      - name: Upload unsigned applications
+        uses: actions/upload-artifact@v6
+        with:
+          name: fdm-licensing-windows-unsigned
+          path: |
+            dist/fdm-licensing/
+            dist/FDM-Licensing-Client/
+          if-no-files-found: error
