@@ -23,6 +23,19 @@ import requests
 from requests import Response, Session
 from requests.adapters import HTTPAdapter
 
+from security_validation import (
+    MAX_CREDENTIAL_LENGTH,
+    MAX_TOKEN_LENGTH,
+    resolve_operator_path,
+    safe_error_text,
+    validate_bool,
+    validate_https_base_url,
+    validate_lifetime,
+    validate_opaque_value,
+    validate_timeout,
+    validate_user_agent,
+)
+
 
 class CiscoSupportTokenError(RuntimeError):
     """Base exception for Cisco token acquisition failures."""
@@ -73,24 +86,24 @@ class CiscoSupportTokenClient:
         verify_certificate: bool = True,
         user_agent: str = "cisco-support-token-client/1.0",
     ) -> None:
-        if not client_id:
-            raise ValueError("client_id must not be empty")
-        if not client_secret:
-            raise ValueError("client_secret must not be empty")
-        if not token_url.startswith("https://"):
-            raise ValueError("token_url must use https://")
-
-        self._client_id = client_id
-        self._client_secret = client_secret
-        self._token_url = token_url
-        self._timeout = timeout
+        self._client_id = validate_opaque_value(
+            client_id, name="client_id", maximum=MAX_CREDENTIAL_LENGTH
+        )
+        self._client_secret = validate_opaque_value(
+            client_secret, name="client_secret", maximum=MAX_CREDENTIAL_LENGTH
+        )
+        self._token_url = validate_https_base_url(token_url, name="token_url").rstrip("/")
+        self._timeout = validate_timeout(timeout)
+        verify_certificate = validate_bool(
+            verify_certificate, name="verify_certificate"
+        )
         self._token: BearerToken | None = None
         self._token_lock = threading.RLock()
         self._closed = False
 
         self.session: Session = requests.Session()
         if ca_bundle is not None:
-            ca_path = Path(ca_bundle).expanduser().resolve()
+            ca_path = resolve_operator_path(ca_bundle, name="ca_bundle")
             if not ca_path.is_file():
                 raise FileNotFoundError(f"CA bundle not found: {ca_path}")
             self.session.verify = str(ca_path)
@@ -100,7 +113,7 @@ class CiscoSupportTokenClient:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": user_agent,
+                "User-Agent": validate_user_agent(user_agent),
             }
         )
         self.session.mount("https://", HTTPAdapter(max_retries=0))
@@ -119,7 +132,7 @@ class CiscoSupportTokenClient:
             text = repr(body)
         except ValueError:
             text = response.text
-        return text[:limit]
+        return safe_error_text(text, limit=limit)
 
     def _token_post(self) -> dict[str, Any]:
         try:
@@ -173,17 +186,32 @@ class CiscoSupportTokenClient:
     def _token_from_response(data: Mapping[str, Any]) -> BearerToken:
         now = time.monotonic()
         try:
-            expires_in = max(1, int(data["expires_in"]))
-        except (KeyError, TypeError, ValueError) as exc:
+            expires_in = validate_lifetime(data["expires_in"], name="expires_in")
+        except (KeyError, ValueError) as exc:
             raise CiscoSupportTokenRequestError(
                 "Token response contained an invalid expires_in value"
             ) from exc
 
+        try:
+            access_token = validate_opaque_value(
+                data["access_token"], name="access_token", maximum=MAX_TOKEN_LENGTH
+            )
+            token_type = validate_opaque_value(
+                data.get("token_type", "Bearer"), name="token_type", maximum=32
+            )
+            scope = data.get("scope")
+            if scope is not None:
+                scope = validate_opaque_value(scope, name="scope", maximum=2048)
+        except (KeyError, ValueError) as exc:
+            raise CiscoSupportTokenRequestError(
+                "Token response contained an invalid token field"
+            ) from exc
+
         return BearerToken(
-            access_token=str(data["access_token"]),
+            access_token=access_token,
             expires_at=now + expires_in,
-            token_type=str(data.get("token_type", "Bearer")),
-            scope=str(data["scope"]) if data.get("scope") else None,
+            token_type=token_type,
+            scope=scope,
         )
 
     def authenticate(self) -> BearerToken:

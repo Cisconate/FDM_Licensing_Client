@@ -10,6 +10,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from security_validation import MAX_CREDENTIAL_LENGTH, validate_opaque_value
+
 try:
     import keyring
     from keyring.errors import PasswordDeleteError
@@ -138,19 +140,35 @@ class KeyManager:
             raise CredentialsNotFoundError(
                 "Cisco client credentials are incomplete; run 'key_manager.py store'"
             )
+        try:
+            client_id = validate_opaque_value(
+                client_id, name="stored client_id", maximum=MAX_CREDENTIAL_LENGTH
+            )
+            client_secret = validate_opaque_value(
+                client_secret,
+                name="stored client_secret",
+                maximum=MAX_CREDENTIAL_LENGTH,
+            )
+        except ValueError as exc:
+            raise CredentialStorageError("Stored Cisco credentials are invalid") from exc
         return CiscoClientCredentials(client_id, client_secret)
 
     def store_cisco_credentials(self, client_id: str, client_secret: str) -> None:
         """Store a pair, restoring prior values after a partial failure."""
-        if not client_id.strip():
-            raise ValueError("client_id must not be empty")
-        if not client_secret:
-            raise ValueError("client_secret must not be empty")
+        client_id = validate_opaque_value(
+            client_id, name="client_id", maximum=MAX_CREDENTIAL_LENGTH
+        ).strip()
+        client_id = validate_opaque_value(
+            client_id, name="client_id", maximum=MAX_CREDENTIAL_LENGTH
+        )
+        client_secret = validate_opaque_value(
+            client_secret, name="client_secret", maximum=MAX_CREDENTIAL_LENGTH
+        )
         old_id = self._get(CLIENT_ID_KEY)
         old_secret = self._get(CLIENT_SECRET_KEY)
         try:
             self._backend.set_password(
-                self.service_name, CLIENT_ID_KEY, client_id.strip()
+                self.service_name, CLIENT_ID_KEY, client_id
             )
             self._backend.set_password(
                 self.service_name, CLIENT_SECRET_KEY, client_secret

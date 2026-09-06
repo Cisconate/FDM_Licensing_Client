@@ -12,6 +12,18 @@ from fdm_client import FDMClient, FDMError
 from fdm_certificate_store import bootstrap_certificate_store
 
 
+def _environment_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes"}:
+        return True
+    if normalized in {"0", "false", "no"}:
+        return False
+    raise ValueError(f"${name} must be true/false, yes/no, or 1/0")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="example.py",
@@ -25,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.getenv("FDM_PORT", "443")),
+        default=os.getenv("FDM_PORT", "443"),
         help="FDM HTTPS management port (default: $FDM_PORT or 443).",
     )
     parser.add_argument(
@@ -63,8 +75,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--debug-logging",
         action="store_true",
-        default=os.getenv("FDM_DEBUG_LOGGING", "false").lower()
-        in {"1", "true", "yes"},
+        default=_environment_bool("FDM_DEBUG_LOGGING", False),
         help="Write debug logs to the console and to fdm_client_debug.log.",
     )
     parser.add_argument(
@@ -76,8 +87,7 @@ def parse_args() -> argparse.Namespace:
         "--verify-certificate",
         dest="verify_certificate",
         action="store_true",
-        default=os.getenv("FDM_VERIFY_CERTIFICATE", "true").lower()
-        not in {"0", "false", "no"},
+        default=_environment_bool("FDM_VERIFY_CERTIFICATE", True),
         help="Verify the FDM TLS certificate using the CA bundle.",
     )
     parser.add_argument(
@@ -90,7 +100,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    args = parse_args()
+    try:
+        args = parse_args()
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     if not args.host:
         print("Error: --host or $FDM_HOST is required", file=sys.stderr)

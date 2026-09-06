@@ -60,6 +60,12 @@ class KeyManagerTests(unittest.TestCase):
         with self.assertRaises(CredentialsNotFoundError):
             self.manager.get_cisco_credentials()
 
+    def test_retrieved_credentials_are_validated_at_keyring_boundary(self):
+        self.backend.set_password(self.manager.service_name, CLIENT_ID_KEY, "id\n")
+        self.backend.set_password(self.manager.service_name, CLIENT_SECRET_KEY, "secret")
+        with self.assertRaises(CredentialStorageError):
+            self.manager.get_cisco_credentials()
+
     def test_delete_removes_both_values(self):
         self.manager.store_cisco_credentials("id", "secret")
         self.manager.delete_cisco_credentials()

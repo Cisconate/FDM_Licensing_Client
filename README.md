@@ -152,9 +152,11 @@ macOS Keychain setup, application integration, and testing guidance.
 | `example.py` | Command-line FDM example |
 | `cisco_support_token_client.py` | Cisco OAuth2 token acquisition and caching |
 | `cisco_support_api_client.py` | Smart Licensing/PLR request client |
+| `security_validation.py` | Shared trust-boundary validation and safe encoding |
 | `requirements.txt` | Runtime dependency constraints |
-| `test_*.py` | Offline unit tests discovered by `unittest` |
+| `test_*.py` | Unit tests plus the conditional live OAuth test |
 | `TESTING.md` | Local, CI, and agent-generated testing policy |
+| `SECURITY.md` | Input-boundary inventory and coding standard |
 
 ## Automated tests and CI
 
@@ -164,10 +166,11 @@ Run the complete test suite from the project root:
 python -m unittest discover -v
 ```
 
-The tests use mocks and do not require live FDM or Cisco credentials. GitHub
-Actions runs this command automatically on every push and pull request against
-Python 3.10 and 3.14. See [TESTING.md](TESTING.md) for PyCharm setup, branch
-protection, test-writing conventions, and the `[test-required]` agent contract.
+The unit tests use mocks and do not require live FDM or Cisco credentials.
+GitHub Actions runs the suite automatically on every push and pull request
+against Python 3.10 and 3.14. See [TESTING.md](TESTING.md) for PyCharm setup,
+branch protection, test-writing conventions, and the `[test-required]` agent
+contract.
 An additional manually triggered workflow can validate real Cisco OAuth token
 generation using secrets stored in a protected GitHub Environment.
 When the local OS credential store contains a complete Cisco credential pair,
@@ -186,6 +189,9 @@ the integration test is skipped.
   source-control and credential-handling policies.
 - Treat server error messages and debug logs as potentially sensitive even
   though this client excludes request credentials and bodies from its logs.
+- Treat all external data as untrusted until it passes the owning public
+  boundary. See [SECURITY.md](SECURITY.md) for validation, encoding, performance,
+  and test requirements.
 
 ## Development status
 

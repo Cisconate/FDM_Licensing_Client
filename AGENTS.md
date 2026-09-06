@@ -26,6 +26,19 @@ well-documented, reusable interface is intentionally added.
 - Keep error output bounded and avoid including request headers or request data.
 - Close sessions, clear cached credentials, and revoke tokens where supported.
 
+## Input-boundary standard
+
+Follow `SECURITY.md` for every external input. Validate and normalize once at
+the public boundary that owns the value, then pass a stable trusted
+representation internally without repeated validation. Treat CLI arguments,
+environment variables, public API arguments, callbacks, credential stores,
+filesystem content, and every HTTP response as untrusted inputs.
+
+Do not apply generic escaping. Validate against the destination's grammar,
+reject malformed security-sensitive input, preserve validated opaque secrets,
+and encode at the output sink. Every feature that adds or changes an input must
+co-develop boundary tests and update the boundary inventory when appropriate.
+
 ## Development workflow
 
 1. Use Python 3.10 or newer in a virtual environment.

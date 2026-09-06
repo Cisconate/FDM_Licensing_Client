@@ -19,6 +19,22 @@ import requests
 from requests import Response, Session
 from requests.adapters import HTTPAdapter
 
+from security_validation import (
+    MAX_TOKEN_LENGTH,
+    encode_json_payload,
+    resolve_operator_path,
+    safe_error_text,
+    validate_headers,
+    validate_https_base_url,
+    validate_bool,
+    validate_http_method,
+    validate_opaque_value,
+    validate_relative_api_path,
+    validate_query_params,
+    validate_timeout,
+    validate_user_agent,
+)
+
 
 class CiscoPlrError(RuntimeError):
     """Base exception for PLR reservation failures."""
@@ -58,20 +74,27 @@ class CiscoPlrReservationClient:
         verify_certificate: bool = True,
         user_agent: str = "cisco-plr-reservation-client/1.0",
     ) -> None:
-        if not base_url.startswith("https://"):
-            raise ValueError("base_url must use https://")
         if bearer_token is None and token_provider is None:
             raise ValueError("bearer_token or token_provider is required")
+        if bearer_token is not None:
+            bearer_token = validate_opaque_value(
+                bearer_token, name="bearer_token", maximum=MAX_TOKEN_LENGTH
+            )
+        if token_provider is not None and not callable(token_provider):
+            raise ValueError("token_provider must be callable")
+        verify_certificate = validate_bool(
+            verify_certificate, name="verify_certificate"
+        )
 
-        self.base_url = base_url.rstrip("/") + "/"
+        self.base_url = validate_https_base_url(base_url)
         self._bearer_token = bearer_token
         self._token_provider = token_provider
-        self._timeout = timeout
+        self._timeout = validate_timeout(timeout)
         self._closed = False
 
         self.session: Session = requests.Session()
         if ca_bundle is not None:
-            ca_path = Path(ca_bundle).expanduser().resolve()
+            ca_path = resolve_operator_path(ca_bundle, name="ca_bundle")
             if not ca_path.is_file():
                 raise FileNotFoundError(f"CA bundle not found: {ca_path}")
             self.session.verify = str(ca_path)
@@ -81,7 +104,7 @@ class CiscoPlrReservationClient:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": user_agent,
+                "User-Agent": validate_user_agent(user_agent),
             }
         )
         self.session.mount("https://", HTTPAdapter(max_retries=0))
@@ -99,12 +122,12 @@ class CiscoPlrReservationClient:
             text = repr(body)
         except ValueError:
             text = response.text
-        return text[:limit]
+        return safe_error_text(text, limit=limit)
 
     def set_bearer_token(self, bearer_token: str) -> None:
-        if not bearer_token:
-            raise ValueError("bearer_token must not be empty")
-        self._bearer_token = bearer_token
+        self._bearer_token = validate_opaque_value(
+            bearer_token, name="bearer_token", maximum=MAX_TOKEN_LENGTH
+        )
 
     def _resolve_bearer_token(self) -> str:
         if self._bearer_token:
@@ -113,9 +136,12 @@ class CiscoPlrReservationClient:
             raise CiscoPlrError("No bearer token available")
 
         token = self._token_provider()
-        if not token:
-            raise CiscoPlrError("Token provider returned an empty bearer token")
-        return token
+        try:
+            return validate_opaque_value(
+                token, name="token provider result", maximum=MAX_TOKEN_LENGTH
+            )
+        except ValueError as exc:
+            raise CiscoPlrError("Token provider returned an invalid bearer token") from exc
 
     def request(
         self,
@@ -127,20 +153,20 @@ class CiscoPlrReservationClient:
         headers: Mapping[str, str] | None = None,
     ) -> Response:
         self._ensure_open()
-        method = method.upper()
-        if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
-            raise ValueError(f"Unsupported HTTP method: {method}")
+        method = validate_http_method(method)
 
         url = self._build_url(path)
-        request_headers = dict(headers or {})
+        request_headers = validate_headers(headers)
+        request_params = validate_query_params(params)
+        request_body = encode_json_payload(json)
         request_headers["Authorization"] = f"Bearer {self._resolve_bearer_token()}"
 
         try:
             response = self.session.request(
                 method,
                 url,
-                params=params,
-                json=json,
+                params=request_params,
+                data=request_body,
                 headers=request_headers,
                 timeout=self._timeout,
                 allow_redirects=False,
@@ -203,18 +229,15 @@ class CiscoPlrReservationClient:
         self._closed = True
 
     def _build_url(self, path: str) -> str:
-        if not path:
-            raise ValueError("path must not be empty")
-        if path.startswith("http://") or path.startswith("https://"):
-            raise ValueError("Absolute URLs are not accepted")
-
-        normalized = path.lstrip("/")
+        normalized = validate_relative_api_path(path)
         url = urljoin(self.base_url, normalized)
 
         base = urlparse(self.base_url)
         target = urlparse(url)
         if (target.scheme, target.netloc) != (base.scheme, base.netloc):
             raise ValueError("Request path escaped the configured Cisco origin")
+        if not target.path.startswith(base.path):
+            raise ValueError("Request path escaped the configured Cisco API root")
         return url
 
     def _ensure_open(self) -> None:

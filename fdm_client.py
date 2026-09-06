@@ -31,6 +31,25 @@ from requests import Response, Session
 from requests.adapters import HTTPAdapter
 
 from fdm_certificate_store import certificate_bundle_path
+from security_validation import (
+    MAX_CREDENTIAL_LENGTH,
+    MAX_TOKEN_LENGTH,
+    encode_json_payload,
+    resolve_operator_path,
+    safe_error_text,
+    validate_api_version,
+    validate_bool,
+    validate_headers,
+    validate_host,
+    validate_http_method,
+    validate_lifetime,
+    validate_opaque_value,
+    validate_port,
+    validate_query_params,
+    validate_relative_api_path,
+    validate_timeout,
+    validate_user_agent,
+)
 
 
 class FDMError(RuntimeError):
@@ -123,21 +142,24 @@ class FDMClient:
         debug_logging: bool = False,
         log_file: str | Path | None = None,
     ) -> None:
-        if not host or "/" in host or "://" in host:
-            raise ValueError("host must be a hostname or IP address only")
-        if not username:
-            raise ValueError("username must not be empty")
-        if not password:
-            raise ValueError("password must not be empty")
-        if not (1 <= port <= 65535):
-            raise ValueError("port must be between 1 and 65535")
-        if api_version != "latest" and not api_version.startswith("v"):
-            raise ValueError("api_version must be 'latest' or start with 'v'")
+        host = validate_host(host)
+        port = validate_port(port)
+        api_version = validate_api_version(api_version)
+        verify_certificate = validate_bool(
+            verify_certificate, name="verify_certificate"
+        )
+        debug_logging = validate_bool(debug_logging, name="debug_logging")
+        username = validate_opaque_value(
+            username, name="username", maximum=MAX_CREDENTIAL_LENGTH
+        )
+        password = validate_opaque_value(
+            password, name="password", maximum=MAX_CREDENTIAL_LENGTH
+        )
 
         ca_path: Path | None = None
         if verify_certificate:
             if ca_bundle is not None:
-                ca_path = Path(ca_bundle).expanduser().resolve()
+                ca_path = resolve_operator_path(ca_bundle, name="ca_bundle")
             elif certificate_store_dir is not None:
                 ca_path = certificate_bundle_path(certificate_store_dir)
             else:
@@ -150,7 +172,7 @@ class FDMClient:
 
         self._username = username
         self._password = password
-        self._timeout = timeout
+        self._timeout = validate_timeout(timeout)
         self._token: TokenState | None = None
         self._token_lock = threading.RLock()
         self._closed = False
@@ -173,7 +195,7 @@ class FDMClient:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": user_agent,
+                "User-Agent": validate_user_agent(user_agent),
             }
         )
 
@@ -199,13 +221,16 @@ class FDMClient:
             text = repr(body)
         except ValueError:
             text = response.text
-        return text[:limit]
+        return safe_error_text(text, limit=limit)
 
     def _configure_debug_logging(self, log_file: str | Path | None) -> None:
         if log_file is None:
             log_path = Path(__file__).resolve().with_name("fdm_client_debug.log")
         else:
-            log_path = Path(log_file).expanduser().resolve()
+            log_path = resolve_operator_path(log_file, name="log_file")
+
+        if log_path.is_symlink() or (log_path.exists() and not log_path.is_file()):
+            raise ValueError("log_file must be a regular file and not a symbolic link")
 
         log_path.parent.mkdir(parents=True, exist_ok=True)
         formatter = logging.Formatter(
@@ -278,8 +303,8 @@ class FDMClient:
     def _state_from_response(data: Mapping[str, Any]) -> TokenState:
         now = time.monotonic()
         try:
-            expires_in = max(1, int(data["expires_in"]))
-        except (KeyError, TypeError, ValueError) as exc:
+            expires_in = validate_lifetime(data["expires_in"], name="expires_in")
+        except (KeyError, ValueError) as exc:
             raise FDMAuthenticationError(
                 "Token response contained an invalid expires_in value"
             ) from exc
@@ -288,20 +313,39 @@ class FDMClient:
         refresh_expires_at: float | None = None
         if refresh_token:
             try:
-                refresh_expires_at = now + max(
-                    1, int(data["refresh_expires_in"])
+                refresh_expires_at = now + validate_lifetime(
+                    data["refresh_expires_in"], name="refresh_expires_in"
                 )
-            except (KeyError, TypeError, ValueError) as exc:
+            except (KeyError, ValueError) as exc:
                 raise FDMAuthenticationError(
                     "Token response contained an invalid refresh_expires_in value"
                 ) from exc
 
+        try:
+            access_token = validate_opaque_value(
+                data["access_token"], name="access_token", maximum=MAX_TOKEN_LENGTH
+            )
+            validated_refresh = (
+                validate_opaque_value(
+                    refresh_token, name="refresh_token", maximum=MAX_TOKEN_LENGTH
+                )
+                if refresh_token
+                else None
+            )
+            token_type = validate_opaque_value(
+                data.get("token_type", "Bearer"), name="token_type", maximum=32
+            )
+        except (KeyError, ValueError) as exc:
+            raise FDMAuthenticationError(
+                "Token response contained an invalid token field"
+            ) from exc
+
         return TokenState(
-            access_token=str(data["access_token"]),
-            refresh_token=str(refresh_token) if refresh_token else None,
+            access_token=access_token,
+            refresh_token=validated_refresh,
             access_expires_at=now + expires_in,
             refresh_expires_at=refresh_expires_at,
-            token_type=str(data.get("token_type", "Bearer")),
+            token_type=token_type,
         )
 
     def authenticate(self) -> None:
@@ -376,13 +420,13 @@ class FDMClient:
         validation. JSON callers can use response.json().
         """
         self._ensure_open()
-        method = method.upper()
-        if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
-            raise ValueError(f"Unsupported HTTP method: {method}")
+        method = validate_http_method(method)
 
         url = self._build_url(path)
         request_path = urlparse(url).path
-        request_headers = dict(headers or {})
+        request_headers = validate_headers(headers)
+        request_params = validate_query_params(params)
+        request_body = encode_json_payload(json)
         request_headers["Authorization"] = (
             f"Bearer {self._ensure_access_token()}"
         )
@@ -393,8 +437,8 @@ class FDMClient:
             response = self.session.request(
                 method,
                 url,
-                params=params,
-                json=json,
+                params=request_params,
+                data=request_body,
                 headers=request_headers,
                 timeout=self._timeout,
                 allow_redirects=False,
@@ -428,8 +472,8 @@ class FDMClient:
                 response = self.session.request(
                     method,
                     url,
-                    params=params,
-                    json=json,
+                    params=request_params,
+                    data=request_body,
                     headers=request_headers,
                     timeout=self._timeout,
                     allow_redirects=False,
@@ -516,13 +560,7 @@ class FDMClient:
             self._closed = True
 
     def _build_url(self, path: str) -> str:
-        if not path:
-            raise ValueError("path must not be empty")
-
-        if path.startswith("http://") or path.startswith("https://"):
-            raise ValueError("Absolute URLs are not accepted")
-
-        normalized = path.lstrip("/")
+        normalized = validate_relative_api_path(path)
         api_prefix = urlparse(self.base_url).path.lstrip("/")
         if normalized.startswith(api_prefix):
             origin = self.base_url.split("/api/", 1)[0] + "/"
