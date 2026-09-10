@@ -45,8 +45,16 @@ class CredentialsNotFoundError(KeyManagerError):
     """One or more required Cisco client credentials are absent."""
 
 
+class CredentialAccessError(KeyManagerError):
+    """The configured native credential store could not be read."""
+
+
+class InvalidStoredCredentialsError(KeyManagerError):
+    """Stored credential values do not satisfy the credential grammar."""
+
+
 class CredentialStorageError(KeyManagerError):
-    """The credential backend failed to store or retrieve a value."""
+    """The credential backend failed to store or delete a value."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,18 +135,37 @@ class KeyManager:
         try:
             value = self._backend.get_password(self.service_name, username)
         except Exception as exc:
-            raise CredentialStorageError(
-                "The credential backend failed while retrieving credentials"
+            store_name = {
+                "macOS": "macOS Keychain",
+                "Windows": "Windows Credential Manager",
+                "Linux": "Linux secret-service/keyring",
+            }[self._platform_name]
+            raise CredentialAccessError(
+                f"{store_name} could not be accessed using {self._backend_name}; "
+                "verify the current user, unlock the credential store, and allow "
+                "this Python executable to read it"
             ) from exc
-        return value if isinstance(value, str) and value else None
+        if value is None or value == "":
+            return None
+        if not isinstance(value, str):
+            raise InvalidStoredCredentialsError(
+                f"Stored {username} is not a text value"
+            )
+        return value
 
     def get_cisco_credentials(self) -> CiscoClientCredentials:
         """Return the complete credential pair or fail without partial results."""
         client_id = self._get(CLIENT_ID_KEY)
         client_secret = self._get(CLIENT_SECRET_KEY)
-        if not client_id or not client_secret:
+        missing = []
+        if not client_id:
+            missing.append("Client ID")
+        if not client_secret:
+            missing.append("Client Secret")
+        if missing:
             raise CredentialsNotFoundError(
-                "Cisco client credentials are incomplete; run 'key_manager.py store'"
+                f"Cisco {' and '.join(missing)} {'are' if len(missing) > 1 else 'is'} "
+                "empty or not stored; run 'key_manager.py store'"
             )
         try:
             client_id = validate_opaque_value(
@@ -150,7 +177,10 @@ class KeyManager:
                 maximum=MAX_CREDENTIAL_LENGTH,
             )
         except ValueError as exc:
-            raise CredentialStorageError("Stored Cisco credentials are invalid") from exc
+            raise InvalidStoredCredentialsError(
+                "Stored Cisco credentials are malformed or exceed the supported length; "
+                "store a new credential pair"
+            ) from exc
         return CiscoClientCredentials(client_id, client_secret)
 
     def store_cisco_credentials(self, client_id: str, client_secret: str) -> None:

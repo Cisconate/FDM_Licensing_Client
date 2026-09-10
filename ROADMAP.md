@@ -39,9 +39,9 @@ an optimization.
 
 | ID | Enhancement | Priority | Status | Dependency or completion evidence |
 | --- | --- | --- | --- | --- |
-| FUNC-001 | Generate an FDM reservation request code | P1 | Proposed | Requires the approved FDM endpoint, version policy, request schema, and mocked boundary tests. |
-| FUNC-002 | Generate a Cisco license authorization code | P1 | Proposed | Requires the approved Cisco endpoint and payload contract plus conditional live read-only validation where applicable. |
-| FUNC-003 | Install an authorization code on FDM | P1 | Proposed | Requires the approved FDM contract, an explicit user confirmation design for the device-changing operation, and deterministic result handling. |
+| FUNC-001 | Generate an FDM reservation request code | P1 | Complete | Atomic FDM mode and request-code operations are implemented with mocked boundary tests and documented API contracts. |
+| FUNC-002 | Generate a Cisco license authorization code | P1 | Blocked | Atomic exchange and response validation are implemented; a concrete default requires the entitled Cisco CSSM endpoint and payload contract. |
+| FUNC-003 | Install an authorization code on FDM | P1 | Complete | Atomic installation is implemented with strict UPLR code validation and mocked no-network failure tests; live mutation remains operator-controlled. |
 | FUNC-004 | Coordinate the end-to-end reservation workflow | P1 | Proposed | Depends on FUNC-001 through FUNC-003 and must expose progress and recoverable handoff artifacts without logging sensitive data. |
 | FUNC-005 | Add SLR and standard licensing capabilities | P2 | Proposed | Add each capability only after its Cisco/FDM API contract is documented and registered independently. |
 

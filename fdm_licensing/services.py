@@ -5,6 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from cisco_support_token_client import CiscoSupportTokenClient
+from cisco_support_api_client import (
+    APX_SOFTWARE_API_PROFILE,
+    CiscoLicensingApiProfile,
+    CiscoPlrReservationClient,
+    SmartAccount,
+    VirtualAccount,
+)
 from fdm_certificate_store import bootstrap_certificate_store
 from fdm_client import FDMClient
 from key_manager import KeyManager
@@ -70,6 +77,52 @@ class CiscoAuthenticationService:
             client.close()
 
 
+class CiscoAccountService:
+    """Discover account choices without coupling selection to a presentation."""
+
+    def __init__(
+        self,
+        manager_factory: Callable[[], KeyManager] = KeyManager,
+        token_client_factory: Callable[..., CiscoSupportTokenClient] = CiscoSupportTokenClient,
+        licensing_client_factory: Callable[..., CiscoPlrReservationClient] = CiscoPlrReservationClient,
+        profile: CiscoLicensingApiProfile = APX_SOFTWARE_API_PROFILE,
+    ) -> None:
+        self._manager_factory = manager_factory
+        self._token_client_factory = token_client_factory
+        self._licensing_client_factory = licensing_client_factory
+        self._profile = profile
+
+    def _clients(self) -> tuple[CiscoSupportTokenClient, CiscoPlrReservationClient]:
+        credentials = self._manager_factory().get_cisco_credentials()
+        tokens = self._token_client_factory(
+            client_id=credentials.client_id, client_secret=credentials.client_secret
+        )
+        licensing = self._licensing_client_factory(
+            profile=self._profile,
+            token_provider=tokens.get_bearer_token,
+            token_refresher=tokens.refresh,
+        )
+        return tokens, licensing
+
+    def list_smart_accounts(self) -> tuple[SmartAccount, ...]:
+        tokens, licensing = self._clients()
+        try:
+            return licensing.list_smart_accounts()
+        finally:
+            licensing.close()
+            tokens.close()
+
+    def list_virtual_accounts(
+        self, smart_account: SmartAccount
+    ) -> tuple[VirtualAccount, ...]:
+        tokens, licensing = self._clients()
+        try:
+            return licensing.list_virtual_accounts(smart_account)
+        finally:
+            licensing.close()
+            tokens.close()
+
+
 class FdmCertificateService:
     def __init__(
         self, bootstrap: Callable[..., object] = bootstrap_certificate_store
@@ -100,7 +153,9 @@ class FdmAuthenticationService:
             password=command.password,
             api_version=command.api_version,
             certificate_store_dir=command.certificate_store_dir,
-        ):
+        ) as client:
             return OperationResult(
-                "FDM authentication", "Authentication succeeded and the session was closed."
+                "FDM authentication",
+                f"Authentication and compatibility validation succeeded for FTD "
+                f"{client.software_version}; the session was closed.",
             )

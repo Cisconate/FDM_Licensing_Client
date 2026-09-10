@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -25,6 +26,7 @@ from fdm_licensing.models import (
     OperationResult,
 )
 from fdm_licensing.services import (
+    CiscoAccountService,
     CiscoAuthenticationService,
     CredentialService,
     FdmAuthenticationService,
@@ -169,6 +171,78 @@ class CiscoAuthenticationPage(CapabilityPage):
         self._complete_layout()
 
 
+class CiscoAccountPage(CapabilityPage):
+    def __init__(self) -> None:
+        super().__init__(
+            "Cisco Account Selection",
+            "Discover accessible accounts. A choice is requested only when more than one account is returned.",
+        )
+        self._service = CiscoAccountService()
+        self._smart_account = None
+        button = QPushButton("Discover accounts")
+        button.clicked.connect(lambda: self._discover_smart_accounts(button))
+        self._layout.addWidget(button)
+        self._complete_layout()
+
+    def _discover_smart_accounts(self, button: QPushButton) -> None:
+        button.setEnabled(False)
+        self._status.setText("Discovering smart accounts…")
+        worker = ServiceWorker(self._service.list_smart_accounts)
+        worker.signals.succeeded.connect(
+            lambda accounts: self._choose_smart_account(button, accounts)
+        )
+        worker.signals.failed.connect(self._show_error)
+        worker.signals.failed.connect(lambda _message: button.setEnabled(True))
+        QThreadPool.globalInstance().start(worker)
+
+    def _choose_smart_account(self, button: QPushButton, accounts: tuple) -> None:
+        if not accounts:
+            self._show_error("No accessible smart accounts were returned")
+            button.setEnabled(True)
+            return
+        if len(accounts) == 1:
+            selected = accounts[0]
+        else:
+            labels = [f"{item.name} ({item.domain})" for item in accounts]
+            label, accepted = QInputDialog.getItem(
+                self, "Select smart account", "Smart account", labels, 0, False
+            )
+            if not accepted:
+                self._status.setText("Account selection cancelled.")
+                button.setEnabled(True)
+                return
+            selected = accounts[labels.index(label)]
+        self._smart_account = selected
+        self._status.setText("Discovering virtual accounts…")
+        worker = ServiceWorker(lambda: self._service.list_virtual_accounts(selected))
+        worker.signals.succeeded.connect(
+            lambda accounts: self._choose_virtual_account(button, accounts)
+        )
+        worker.signals.failed.connect(self._show_error)
+        worker.signals.failed.connect(lambda _message: button.setEnabled(True))
+        QThreadPool.globalInstance().start(worker)
+
+    def _choose_virtual_account(self, button: QPushButton, accounts: tuple) -> None:
+        button.setEnabled(True)
+        if not accounts:
+            self._show_error("No accessible virtual accounts were returned")
+            return
+        if len(accounts) == 1:
+            selected = accounts[0]
+        else:
+            labels = [item.name for item in accounts]
+            label, accepted = QInputDialog.getItem(
+                self, "Select virtual account", "Virtual account", labels, 0, False
+            )
+            if not accepted:
+                self._status.setText("Account selection cancelled.")
+                return
+            selected = accounts[labels.index(label)]
+        self._status.setText(
+            f"Selected {self._smart_account.name} / {selected.name}."
+        )
+
+
 class FdmConnectionPage(CapabilityPage):
     def __init__(self) -> None:
         super().__init__(
@@ -238,4 +312,5 @@ PAGE_FACTORIES: dict[str, Callable[[], QWidget]] = {
     "fdm": FdmConnectionPage,
     "credentials": CredentialPage,
     "cisco_auth": CiscoAuthenticationPage,
+    "cisco_accounts": CiscoAccountPage,
 }

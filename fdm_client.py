@@ -31,6 +31,7 @@ from requests import Response, Session
 from requests.adapters import HTTPAdapter
 
 from fdm_certificate_store import certificate_bundle_path
+from fdm_compatibility import FdmApiProfile, FdmCompatibility, detect_fdm_compatibility
 from security_validation import (
     MAX_CREDENTIAL_LENGTH,
     MAX_TOKEN_LENGTH,
@@ -176,6 +177,7 @@ class FDMClient:
         self._token: TokenState | None = None
         self._token_lock = threading.RLock()
         self._closed = False
+        self._compatibility: FdmCompatibility | None = None
         self._debug_logging = debug_logging
         self._logger = logging.getLogger(
             f"{__name__}.{self.__class__.__name__}.{id(self)}"
@@ -204,8 +206,13 @@ class FDMClient:
         self.session.mount("https://", HTTPAdapter(max_retries=0))
 
     def __enter__(self) -> "FDMClient":
-        self.authenticate()
-        return self
+        try:
+            self.authenticate()
+            self._compatibility = detect_fdm_compatibility(self)
+            return self
+        except Exception:
+            self.close()
+            raise
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         self.close()
@@ -362,6 +369,23 @@ class FDMClient:
             )
             self._token = self._state_from_response(data)
             self._debug("Authentication succeeded")
+
+    @property
+    def software_version(self) -> str | None:
+        """Detected FTD software version after a successful compatibility handshake."""
+        return (
+            self._compatibility.software_version.raw
+            if self._compatibility is not None
+            else None
+        )
+
+    def require_api_profile(self) -> FdmApiProfile:
+        """Return the selected API profile or reject use before the handshake."""
+        if self._compatibility is None:
+            raise FDMError(
+                "FDM compatibility is not validated; use FDMClient as a context manager"
+            )
+        return self._compatibility.profile
 
     def refresh(self) -> None:
         """Exchange the current refresh token for a new token pair."""

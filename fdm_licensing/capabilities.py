@@ -63,6 +63,14 @@ CAPABILITIES: tuple[Capability, ...] = (
         risk=OperationRisk.AUTHENTICATION,
         page_key="cisco_auth",
     ),
+    Capability(
+        id="cisco.accounts",
+        category=CapabilityCategory.CISCO,
+        title="Cisco Account Selection",
+        description="Discover and select accessible smart and virtual accounts.",
+        risk=OperationRisk.READ_ONLY,
+        page_key="cisco_accounts",
+    ),
 )
 
 

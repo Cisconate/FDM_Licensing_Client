@@ -27,7 +27,6 @@ from security_validation import (
     MAX_CREDENTIAL_LENGTH,
     MAX_TOKEN_LENGTH,
     resolve_operator_path,
-    safe_error_text,
     validate_bool,
     validate_https_base_url,
     validate_lifetime,
@@ -43,6 +42,18 @@ class CiscoSupportTokenError(RuntimeError):
 
 class CiscoSupportTokenRequestError(CiscoSupportTokenError):
     """The token endpoint could not be reached or returned a bad response."""
+
+
+class CiscoSupportCredentialRejectedError(CiscoSupportTokenRequestError):
+    """The OAuth provider rejected the supplied client credentials."""
+
+
+class CiscoSupportTokenTransportError(CiscoSupportTokenRequestError):
+    """The OAuth provider could not be reached securely within the timeout."""
+
+
+class CiscoSupportTokenServiceError(CiscoSupportTokenRequestError):
+    """The OAuth provider was reachable but unavailable or returned bad data."""
 
 
 @dataclass(slots=True)
@@ -125,15 +136,6 @@ class CiscoSupportTokenClient:
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         self.close()
 
-    @staticmethod
-    def _safe_error_text(response: Response, limit: int = 1000) -> str:
-        try:
-            body = response.json()
-            text = repr(body)
-        except ValueError:
-            text = response.text
-        return safe_error_text(text, limit=limit)
-
     def _token_post(self) -> dict[str, Any]:
         try:
             response = self.session.post(
@@ -151,36 +153,78 @@ class CiscoSupportTokenClient:
                 allow_redirects=False,
             )
         except requests.exceptions.SSLError as exc:
-            raise CiscoSupportTokenRequestError(
+            raise CiscoSupportTokenTransportError(
                 "TLS validation failed when contacting the Cisco token endpoint"
             ) from exc
+        except requests.exceptions.ConnectTimeout as exc:
+            raise CiscoSupportTokenTransportError(
+                f"Timed out connecting to the Cisco token endpoint after {self._timeout[0]:g} seconds"
+            ) from exc
+        except requests.exceptions.ReadTimeout as exc:
+            raise CiscoSupportTokenTransportError(
+                f"The Cisco token endpoint did not respond within {self._timeout[1]:g} seconds"
+            ) from exc
         except requests.exceptions.RequestException as exc:
-            raise CiscoSupportTokenRequestError(
-                f"Unable to reach the Cisco token endpoint: {exc}"
+            raise CiscoSupportTokenTransportError(
+                "Unable to reach the Cisco token endpoint due to a network error"
             ) from exc
 
         if response.is_redirect:
-            raise CiscoSupportTokenRequestError(
+            raise CiscoSupportTokenServiceError(
                 f"Unexpected redirect from token endpoint (HTTP {response.status_code})"
             )
         if response.status_code != 200:
+            provider_error = self._provider_error_code(response)
+            if response.status_code in {400, 401, 403} and provider_error in {
+                "invalid_client", "invalid_grant", "unauthorized_client"
+            }:
+                raise CiscoSupportCredentialRejectedError(
+                    f"Cisco OAuth rejected the Client ID or Client Secret "
+                    f"(HTTP {response.status_code}, {provider_error}); verify that the "
+                    "stored pair is current and belongs to the same API application"
+                )
+            if response.status_code == 429:
+                raise CiscoSupportTokenServiceError(
+                    "Cisco OAuth rate-limited the token request (HTTP 429); try again later"
+                )
+            if response.status_code >= 500:
+                raise CiscoSupportTokenServiceError(
+                    f"Cisco OAuth is currently unavailable (HTTP {response.status_code})"
+                )
+            detail = f", {provider_error}" if provider_error else ""
             raise CiscoSupportTokenRequestError(
-                f"Token request failed with HTTP {response.status_code}: "
-                f"{self._safe_error_text(response)}"
+                f"Cisco OAuth rejected the token request (HTTP {response.status_code}{detail}); "
+                "the response does not conclusively identify a bad credential pair"
             )
 
         try:
             data = response.json()
         except ValueError as exc:
-            raise CiscoSupportTokenRequestError(
+            raise CiscoSupportTokenServiceError(
                 "Token endpoint returned invalid JSON"
             ) from exc
 
         if not isinstance(data, dict) or not data.get("access_token"):
-            raise CiscoSupportTokenRequestError(
+            raise CiscoSupportTokenServiceError(
                 "Token response did not contain access_token"
             )
         return data
+
+    @staticmethod
+    def _provider_error_code(response: Response) -> str | None:
+        """Return only a bounded OAuth error code, never provider detail text."""
+        try:
+            data = response.json()
+        except ValueError:
+            return None
+        if not isinstance(data, Mapping):
+            return None
+        value = data.get("error")
+        if not isinstance(value, str) or not value or len(value) > 128:
+            return None
+        if not all(char.isalnum() or char in {"_", "-"} for char in value):
+            return None
+        return value
 
     @staticmethod
     def _token_from_response(data: Mapping[str, Any]) -> BearerToken:
@@ -188,7 +232,7 @@ class CiscoSupportTokenClient:
         try:
             expires_in = validate_lifetime(data["expires_in"], name="expires_in")
         except (KeyError, ValueError) as exc:
-            raise CiscoSupportTokenRequestError(
+            raise CiscoSupportTokenServiceError(
                 "Token response contained an invalid expires_in value"
             ) from exc
 
@@ -203,7 +247,7 @@ class CiscoSupportTokenClient:
             if scope is not None:
                 scope = validate_opaque_value(scope, name="scope", maximum=2048)
         except (KeyError, ValueError) as exc:
-            raise CiscoSupportTokenRequestError(
+            raise CiscoSupportTokenServiceError(
                 "Token response contained an invalid token field"
             ) from exc
 
@@ -247,6 +291,12 @@ class CiscoSupportTokenClient:
         token = self.get_bearer_token()
         return {"Authorization": f"Bearer {token}"}
 
+    def invalidate(self) -> None:
+        """Discard the cached token so the next lookup authenticates again."""
+        with self._token_lock:
+            self._ensure_open()
+            self._token = None
+
     def close(self) -> None:
         if self._closed:
             return
@@ -264,10 +314,17 @@ class CiscoSupportTokenClient:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse the standalone token-client diagnostic options."""
     parser = argparse.ArgumentParser(
+        prog="cisco_support_token_client.py",
         description=(
             "Cisco Support OAuth token client. Credentials are read from the "
             "operating-system credential store."
-        )
+        ),
+        epilog=(
+            "example: python cisco_support_token_client.py --check\n\n"
+            "This command performs a live OAuth request but never displays the "
+            "credential values or returned token."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--check",

@@ -20,6 +20,8 @@ desktop GUI foundation.
 - Can bootstrap a project-local certificate bundle for initial trust setup.
 - Obtains and caches Cisco Support API OAuth2 client-credentials tokens.
 - Sends Smart Licensing reservation requests using a supplied bearer token.
+- Provides atomic Universal PLR operations for FDM request-code generation,
+  CSSM handoff, and FDM authorization-code installation.
 - Avoids logging passwords, bearer tokens, and request bodies.
 
 ## Requirements
@@ -43,6 +45,13 @@ On Windows PowerShell, activate the environment with:
 ```
 
 ## Quick start: FDM
+
+Display every supported option and its environment-variable fallback before
+connecting to a device:
+
+```bash
+python example.py --help
+```
 
 The example reads configuration from environment variables and prompts for the
 password when `FDM_PASSWORD` is not set:
@@ -101,7 +110,11 @@ with FDMClient(
 ```
 
 Using the context manager authenticates on entry and performs best-effort token
-revocation and session cleanup on exit.
+revocation and session cleanup on exit. Immediately after authentication it
+reads `operational/systeminfo/default`, validates the detected FTD software
+release, and selects the matching API profile. The current supported profile is
+FTD `7.6.x`; unsupported or malformed versions fail before a capability request
+is sent.
 
 ## Cisco Support and Smart Licensing clients
 
@@ -131,6 +144,18 @@ with CiscoSupportTokenClient(
 The reservation route and payload depend on the approved Cisco API workflow;
 the client deliberately does not guess them.
 
+The supplied Software APIs 1.0.2 contract is available through the named APX
+profile. Discover and select accessible accounts with:
+
+```bash
+fdm-licensing cisco accounts
+fdm-licensing cisco accounts --smart-account example.com --virtual-account Default
+```
+
+When multiple results exist, the CLI prompts only on an interactive terminal;
+automation must provide both switches. The desktop account-selection page uses
+the same discovery service and opens a selector only for multiple choices.
+
 For secure cross-platform credential storage, use `key_manager.py`. It stores
 the Cisco Client ID and Client Secret in the native OS credential store and
 never prints stored values:
@@ -141,6 +166,11 @@ python key_manager.py status
 python cisco_support_token_client.py --check
 ```
 
+Diagnostics distinguish missing or malformed stored values, native credential
+store access failures, confirmed OAuth credential rejection, inconclusive OAuth
+policy rejection, TLS/network timeouts, rate limiting, and provider failure.
+They never print credential values, provider descriptions, or bearer tokens.
+
 See [CREDENTIAL_MANAGEMENT.md](CREDENTIAL_MANAGEMENT.md) for platform support,
 macOS Keychain setup, application integration, and testing guidance.
 
@@ -149,7 +179,9 @@ macOS Keychain setup, application integration, and testing guidance.
 | File | Purpose |
 | --- | --- |
 | `fdm_client.py` | Authenticated FDM REST client |
+| `fdm_compatibility.py` | FTD version detection and API route profiles |
 | `fdm_certificate_store.py` | Certificate bundle bootstrap and lookup |
+| `fdm_plr_client.py` | Atomic FDM Universal PLR operations |
 | `example.py` | Command-line FDM example |
 | `key_manager.py` | Native OS storage for Cisco client credentials |
 | `cisco_support_token_client.py` | Cisco OAuth2 token acquisition and caching |
@@ -162,6 +194,7 @@ macOS Keychain setup, application integration, and testing guidance.
 | `SECURITY.md` | Input-boundary inventory and coding standard |
 | `PACKAGING.md` | Windows GUI, executable build, and extension guide |
 | `ROADMAP.md` | Categorized future enhancements and performance priorities |
+| `PLR_WORKFLOW.md` | Universal PLR API map, safety boundaries, and usage |
 
 For implementation work, start with the responsibility map in `AGENTS.md`.
 It identifies the owning module, public API, associated tests, and detailed
@@ -177,21 +210,41 @@ fdm-licensing capabilities
 fdm-licensing-gui
 ```
 
-The desktop menu exposes the currently supported FDM and Cisco authentication
-capabilities and presents the planned FTD licensing sequence. Endpoint-specific
-reservation and authorization steps remain unavailable until their approved API
-contracts are implemented. See [PACKAGING.md](PACKAGING.md) to build unsigned
-Windows executables.
+The desktop menu exposes authentication, read-only Cisco account discovery, and
+the planned FTD licensing sequence. The library implements the Software APIs
+1.0.2 Universal reservation request and response shape, but the presentation
+layers do not execute that mutation until endpoint deployment and entitlement
+preflight behavior have been verified. See [PACKAGING.md](PACKAGING.md) to build
+unsigned Windows executables.
+
+The reservation library performs an account-scoped, read-only product-instance
+preflight before every Universal PLR POST. An existing matching PID and serial
+blocks the mutation and directs the operator to recover the prior authorization
+in Cisco License Central or contact TAC for a poisoned product instance. The
+published Software APIs contract does not provide an operation for downloading
+that existing authorization code.
 
 ## Automated tests and CI
 
-Run the complete test suite from the project root:
+Use these standard commands from the project root:
 
 ```bash
+# Complete suite: mocked tests plus the conditional live OAuth test
 python -m unittest discover -v
+
+# Safe, direct live OAuth diagnostic using credentials in the OS keyring
+python cisco_support_token_client.py --check
+
+# Show the FDM example's supported switches without making a connection
+python example.py --help
 ```
 
-The unit tests use mocks and do not require live FDM or Cisco credentials.
+The complete suite's deterministic tests use mocks. Its live OAuth test runs
+when a complete credential pair is available in the OS keyring and skips only
+when those entries are genuinely absent. Backend access errors, empty CI
+secrets, and OAuth failures are test failures. The direct diagnostic makes a
+real token request, returns a nonzero exit status on failure, and never prints
+credential values or the token.
 GitHub Actions runs the suite automatically on every push and pull request
 against Python 3.10 and 3.14. See [TESTING.md](TESTING.md) for PyCharm setup,
 branch protection, test-writing conventions, and the `[test-required]` agent

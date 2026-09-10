@@ -34,12 +34,21 @@ directly. Preserve public constructor and method behavior unless a change
 intentionally documents a compatibility break. Do not invent Cisco endpoint
 paths, payload schemas, or version policy.
 
+FDM capability workflows must enter `FDMClient` through its context manager so
+authentication occurs before the system-information compatibility check. Add a
+tested `FdmApiProfile` for each newly supported FTD major/minor release and keep
+route differences inside that profile; do not scatter version comparisons
+through services, CLI code, or GUI code. Both presentation layers must surface
+the same bounded unsupported-version error from the shared service.
+
 ## Change routing
 
 | Responsibility | Primary module/API | Tests and related guidance |
 | --- | --- | --- |
 | Local FDM authentication and REST | `fdm_client.py` / `FDMClient` | `test_security_validation.py`; add focused FDM tests; `SECURITY.md` |
 | FDM certificate bootstrap | `fdm_certificate_store.py` | `test_security_validation.py`; add focused certificate tests; `SECURITY.md` |
+| FDM Universal PLR operations | `fdm_plr_client.py` / `FdmPlrClient` | `test_plr_workflow.py`; `PLR_WORKFLOW.md`; `SECURITY.md` |
+| FTD compatibility and API profiles | `fdm_compatibility.py` | `test_fdm_compatibility.py`; README; validate before capability calls |
 | Cisco OAuth token generation | `cisco_support_token_client.py` / `CiscoSupportTokenClient` | `test_key_manager.py`, `test_live_cisco_token.py`; credential guide |
 | Cisco credential storage | `key_manager.py` / `KeyManager` | `test_key_manager.py`; credential guide |
 | Smart Licensing requests | `cisco_support_api_client.py` / `CiscoPlrReservationClient` | `test_key_manager.py`, `test_security_validation.py`; add endpoint tests; `SECURITY.md` |
@@ -86,6 +95,18 @@ co-develop boundary tests and update the boundary inventory when appropriate.
 4. Co-develop tests with every behavior change and bug fix. See `TESTING.md`.
 5. Run `python -m unittest discover -v` before considering a change complete.
 6. Before committing, inspect `git diff --cached` and scan for secrets.
+
+### Command-line usage contract
+
+Treat each executable Python module and installed console command as a public
+interface. Every CLI must provide `--help` through `argparse` and describe all
+commands, switches, defaults or environment-variable fallbacks, security-
+relevant effects, and at least one copy/paste example where the invocation is
+not obvious. When adding or changing a switch, update the parser help, the
+relevant README or operator guide, and a focused help/argument test in the same
+change. Keep the standard human test commands in `TESTING.md` current. Help
+must not initialize credential stores, prompt, access the network, or expose
+secrets.
 
 Use mocks or controlled fixtures for every feature and bug fix; never record
 real credentials or tokens in test data. In addition, run applicable live tests

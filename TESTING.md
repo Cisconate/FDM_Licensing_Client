@@ -7,6 +7,33 @@ runs locally, in PyCharm, and in GitHub Actions:
 python -m unittest discover -v
 ```
 
+## Standard human test commands
+
+Run commands from the repository root with the project virtual environment
+active:
+
+```bash
+# Standard development and pre-commit test (exit 0 means pass)
+python -m unittest discover -v
+
+# Focused live Cisco OAuth check (exit 0 means a token was retrieved)
+python cisco_support_token_client.py --check
+
+# Focused integration-test form; skips if credentials are unavailable
+python -m unittest -v test_live_cisco_token
+
+# Discover all supported FDM example switches; performs no network request
+python example.py --help
+```
+
+The direct OAuth check reads credentials from the native OS credential store,
+makes one live token request, and does not print credentials or the token. Use
+`python key_manager.py status` to check whether a complete stored pair exists.
+The integration test skips only when the credential entries are genuinely
+absent. Empty environment secrets, credential-backend failures, rejected
+credentials, and OAuth service failures fail with distinct bounded messages.
+Do not treat a skipped integration test as proof that token retrieval works.
+
 Test files use the top-level `test_*.py` naming convention. Test methods should
 name the observable behavior they protect, such as
 `test_absolute_request_path_is_rejected_before_network_call`.
@@ -116,6 +143,9 @@ Every test report must distinguish these outcomes:
   configuration identified without exposing its value.
 - A skip is expected only when required configuration is absent. Service errors
   and rejected credentials are failures when the configuration exists.
+- Native credential-store access errors are failures, not missing-credential
+  skips. On systems that sandbox Keychain or Credential Manager access, run the
+  live test in the same approved host context as the application.
 
 CI configuration belongs in the repository because it is reviewed and versioned
 with the code, applies consistently to every contributor, and can be reproduced

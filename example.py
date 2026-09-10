@@ -24,10 +24,20 @@ def _environment_bool(name: str, default: bool) -> bool:
     raise ValueError(f"${name} must be true/false, yes/no, or 1/0")
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="example.py",
         description="Example FDM client usage with optional TLS verification control and certificate bootstrap.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  python example.py --help
+  python example.py --host ftd.example.com --bootstrap-certificate
+  python example.py --host ftd.example.com --ca-bundle certificates/fdm-ca-bundle.pem
+
+Configuration may also be supplied with FDM_HOST, FDM_PORT, FDM_USERNAME,
+FDM_PASSWORD, FDM_CA_BUNDLE, FDM_CERTIFICATE_STORE_DIR, FDM_API_VERSION,
+FDM_VERIFY_CERTIFICATE, FDM_DEBUG_LOGGING, and FDM_LOG_FILE.
+""",
     )
     parser.add_argument(
         "--host",
@@ -96,7 +106,7 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Skip TLS certificate verification for self-signed initial setup.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main() -> int:
@@ -155,7 +165,7 @@ def main() -> int:
             result = fdm.get_json("object/networks", params={"limit": 10})
             print(result)
         return 0
-    except (FDMError, OSError, ValueError) as exc:
+    except (FDMError, OSError, RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 

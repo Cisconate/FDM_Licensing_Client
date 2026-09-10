@@ -30,6 +30,8 @@ py-modules = [
     "cisco_support_token_client",
     "fdm_certificate_store",
     "fdm_client",
+    "fdm_compatibility",
+    "fdm_plr_client",
     "key_manager",
     "security_validation",
 ]

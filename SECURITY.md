@@ -20,8 +20,13 @@ bodies. Never construct protocol syntax with untrusted string interpolation.
 | Public constructors | Constructed client | Validate and normalize hosts, URLs, ports, timeouts, paths, credentials, and headers once |
 | Public request methods | API client `request` method | Enforce method/path/header policy; copy query mappings; validate and snapshot JSON |
 | Credential backend | `KeyManager` | Treat retrieved values as untrusted opaque strings; validate before return |
+| Credential diagnostics | `KeyManager` and OAuth client | Distinguish absence, invalid storage, backend access, credential rejection, transport, and provider failures without including stored values or provider descriptions |
 | Token callback | Licensing client | Validate type, presence, length, and control characters on every returned token |
+| Cisco account discovery | `CiscoPlrReservationClient` | Bound pagination and record counts; validate IDs, names, domains, and booleans before returning immutable models |
 | HTTP response | Receiving client | Validate status, redirects, JSON shape, required fields, field sizes, and lifetimes |
+| PLR handoff artifacts | `FdmPlrClient` and `CiscoPlrReservationClient` | Bound and validate request/authorization codes; never log request bodies or codes; require approved CSSM route and schema |
+| Existing PLR product instance | `CiscoPlrReservationClient.preflight_universal_plr` | Parse only visible PID/device identity; require an exact account-scoped PID and serial match; block reservation without attempting recovery by replay |
+| FTD software version | `fdm_compatibility.detect_fdm_compatibility` | Read only after authentication; strictly parse `softwareVersion`; select an allowlisted route profile or fail before capability calls |
 | Filesystem | Certificate/logging component | Resolve operator paths; require plain generated filenames; reject unsafe target types and oversized bundles |
 | Logs and exceptions | Component producing output | Remove control characters, bound length, and exclude credentials, tokens, headers, and request bodies |
 
@@ -29,6 +34,12 @@ GUI widgets and CLI parsers are presentation boundaries, not independent
 security implementations. Both create the same immutable command models before
 calling application services. Application services may trust those models;
 credential stores, callbacks, files, and HTTP responses remain external inputs.
+
+Only `CredentialsNotFoundError` represents an absent credential pair. Native
+backend initialization and access failures must propagate as failures rather
+than being converted into absence. OAuth responses may identify bad credentials
+only through allowlisted bounded error codes; provider descriptions are not
+included in presentation output.
 
 Operator-supplied CA, certificate-store, and log paths may be absolute and may
 reside outside the project. Generated `bundle_name` values must be plain
@@ -40,6 +51,11 @@ Current shared limits are a 2 MiB JSON request body, a 2 MiB certificate bundle,
 token lifetime, 1,000 query parameters, 1,000 characters of provider error
 text, and bounded credential, token, header, path, and user-agent lengths. A
 limit change is a security-policy change and requires boundary tests.
+
+Cisco discovery is limited to 10,000 records per collection and requests 100
+records per page. Account values interpolated into routes are validated and
+percent-encoded as individual path segments. A reservation response must match
+the submitted request code before its authorization code is accepted.
 
 ## Coding requirements
 

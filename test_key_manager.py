@@ -2,20 +2,27 @@
 
 import io
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import Mock, patch
+
+import requests
 
 from cisco_support_api_client import CiscoPlrReservationClient
 from cisco_support_token_client import (
     BearerToken,
+    CiscoSupportCredentialRejectedError,
     CiscoSupportTokenClient,
+    CiscoSupportTokenServiceError,
+    CiscoSupportTokenTransportError,
     main as token_client_main,
 )
 from key_manager import (
     CLIENT_ID_KEY,
     CLIENT_SECRET_KEY,
+    CredentialAccessError,
     CredentialStorageError,
     CredentialsNotFoundError,
+    InvalidStoredCredentialsError,
     KeyManager,
     SecureBackendUnavailableError,
     UnsupportedPlatformError,
@@ -63,8 +70,25 @@ class KeyManagerTests(unittest.TestCase):
     def test_retrieved_credentials_are_validated_at_keyring_boundary(self):
         self.backend.set_password(self.manager.service_name, CLIENT_ID_KEY, "id\n")
         self.backend.set_password(self.manager.service_name, CLIENT_SECRET_KEY, "secret")
-        with self.assertRaises(CredentialStorageError):
+        with self.assertRaises(InvalidStoredCredentialsError):
             self.manager.get_cisco_credentials()
+
+    def test_missing_credentials_identify_empty_fields(self):
+        with self.assertRaisesRegex(
+            CredentialsNotFoundError, "Client ID and Client Secret.*empty or not stored"
+        ):
+            self.manager.get_cisco_credentials()
+        self.backend.set_password(self.manager.service_name, CLIENT_ID_KEY, "id")
+        with self.assertRaisesRegex(CredentialsNotFoundError, "Client Secret is"):
+            self.manager.get_cisco_credentials()
+
+    def test_backend_read_failure_identifies_native_store_and_access_problem(self):
+        self.backend.get_password = Mock(side_effect=RuntimeError("sensitive detail"))
+        with self.assertRaises(CredentialAccessError) as raised:
+            self.manager.get_cisco_credentials()
+        message = str(raised.exception)
+        self.assertIn("macOS Keychain could not be accessed", message)
+        self.assertNotIn("sensitive detail", message)
 
     def test_delete_removes_both_values(self):
         self.manager.store_cisco_credentials("id", "secret")
@@ -131,6 +155,15 @@ class KeyManagerTests(unittest.TestCase):
         self.assertEqual(client._client_id, "")
         self.assertEqual(client._client_secret, "")
 
+    def test_token_invalidation_discards_cached_token(self):
+        client = CiscoSupportTokenClient(
+            client_id="client-id", client_secret="client-secret"
+        )
+        client._token = BearerToken("token", 999999999.0)
+        client.invalidate()
+        self.assertIsNone(client._token)
+        client.close()
+
     def test_token_check_cli_does_not_print_token_or_credentials(self):
         self.manager.store_cisco_credentials("sensitive-id", "sensitive-secret")
         mock_client = Mock()
@@ -154,6 +187,59 @@ class KeyManagerTests(unittest.TestCase):
         self.assertNotIn("sensitive-secret", output.getvalue())
         self.assertNotIn("sensitive-token", output.getvalue())
         mock_client.close.assert_called_once_with()
+
+    def test_oauth_invalid_client_is_reported_as_rejected_credentials(self):
+        client = CiscoSupportTokenClient(
+            client_id="client-id", client_secret="client-secret"
+        )
+        response = Mock(is_redirect=False, status_code=401)
+        response.json.return_value = {"error": "invalid_client", "error_description": "secret detail"}
+        client.session.post = Mock(return_value=response)
+        try:
+            with self.assertRaises(CiscoSupportCredentialRejectedError) as raised:
+                client.authenticate()
+        finally:
+            client.close()
+        self.assertIn("Client ID or Client Secret", str(raised.exception))
+        self.assertNotIn("secret detail", str(raised.exception))
+
+    def test_oauth_ambiguous_rejection_does_not_claim_credentials_are_wrong(self):
+        client = CiscoSupportTokenClient(
+            client_id="client-id", client_secret="client-secret"
+        )
+        response = Mock(is_redirect=False, status_code=403)
+        response.json.return_value = {"error": "insufficient_scope"}
+        client.session.post = Mock(return_value=response)
+        try:
+            with self.assertRaisesRegex(
+                Exception, "does not conclusively identify a bad credential pair"
+            ):
+                client.authenticate()
+        finally:
+            client.close()
+
+    def test_oauth_timeouts_and_provider_outage_are_distinct(self):
+        client = CiscoSupportTokenClient(
+            client_id="client-id", client_secret="client-secret"
+        )
+        client.session.post = Mock(side_effect=requests.exceptions.ConnectTimeout())
+        with self.assertRaisesRegex(CiscoSupportTokenTransportError, "connecting"):
+            client.authenticate()
+        response = Mock(is_redirect=False, status_code=503)
+        response.json.return_value = {}
+        client.session.post = Mock(return_value=response)
+        with self.assertRaisesRegex(CiscoSupportTokenServiceError, "unavailable"):
+            client.authenticate()
+        client.close()
+
+    def test_token_cli_reports_keychain_access_failure_not_missing_credentials(self):
+        error = CredentialAccessError("macOS Keychain could not be accessed")
+        stderr = io.StringIO()
+        with patch("key_manager.KeyManager", side_effect=error):
+            with redirect_stderr(stderr):
+                result = token_client_main(["--check"])
+        self.assertEqual(result, 1)
+        self.assertIn("Keychain could not be accessed", stderr.getvalue())
 
 
 if __name__ == "__main__":
