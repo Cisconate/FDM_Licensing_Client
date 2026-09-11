@@ -2,8 +2,8 @@
 
 ## Purpose and design
 
-`key_manager.py` stores both the Cisco OAuth Client ID/Secret and one default,
-device-scoped FDM host/port/username/password record in the operating-system
+`key_manager.py` stores both the Cisco OAuth Client ID/Secret and device-scoped
+FDM host/port/username/password records in the operating-system
 credential store. It supports macOS, Windows, and Linux via Python `keyring`
 and refuses known null, failing, or plaintext backends.
 
@@ -17,11 +17,19 @@ The data flow is:
 Bearer tokens stay in memory and are never stored by the key manager. The
 licensing client remains independent of credential storage.
 
-Cisco OAuth credentials are application-wide. FDM credentials are bound to the
+Cisco OAuth credentials are application-wide. Each FDM credential is bound to the
 stored host, HTTPS port, and username; the application never applies the saved
 password to a different device identity. This follows the usual industry model
 of addressing a secret by provider, resource, and principal rather than using
 one global device password.
+
+FDM records use exact, normalized host lookup. The application stores only a
+bounded count and sole-host hint for presentation: one stored host may be
+pre-filled, while multiple hosts leave the Host field blank. Typing a host
+performs a direct hashed-key lookup after a short debounce. The GUI does not
+enumerate or render the stored host collection, so lookup behavior does not
+grow with the number of device records. Legacy single-record entries remain
+readable and are incorporated when new host-scoped records are stored.
 
 ## Credential-manager commands
 

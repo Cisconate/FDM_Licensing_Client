@@ -37,6 +37,29 @@ class CiscoCredentialsCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class FdmCredentialsCommand:
+    host: str
+    port: int
+    username: str
+    password: str
+
+    @classmethod
+    def from_untrusted(
+        cls, *, host: str, port: int, username: str, password: str
+    ) -> "FdmCredentialsCommand":
+        return cls(
+            host=validate_host(host),
+            port=validate_port(port),
+            username=validate_opaque_value(
+                username, name="username", maximum=MAX_CREDENTIAL_LENGTH
+            ),
+            password=validate_opaque_value(
+                password, name="password", maximum=MAX_CREDENTIAL_LENGTH
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class FdmConnectionCommand:
     host: str
     port: int

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
+import json
 import platform
 import sys
 from dataclasses import dataclass
@@ -35,6 +37,10 @@ FDM_PORT_KEY = "fdm-port"
 FDM_USERNAME_KEY = "fdm-username"
 FDM_PASSWORD_KEY = "fdm-password"
 FDM_KEYS = (FDM_HOST_KEY, FDM_PORT_KEY, FDM_USERNAME_KEY, FDM_PASSWORD_KEY)
+FDM_RECORD_COUNT_KEY = "fdm-record-count-v1"
+FDM_ONLY_HOST_KEY = "fdm-only-host-v1"
+FDM_RECORD_KEYS_KEY = "fdm-record-keys-v1"
+FDM_RECORD_PREFIX = "fdm-record-v1-"
 CISCO_CLIENT = "CISCO_CLIENT"
 FDM = "FDM"
 SUPPORTED_SYSTEMS = {"Darwin": "macOS", "Windows": "Windows", "Linux": "Linux"}
@@ -113,6 +119,14 @@ class FdmCredentialStatus:
         return all(
             (self.host_present, self.port_present, self.username_present, self.password_present)
         )
+
+
+@dataclass(frozen=True, slots=True)
+class FdmCredentialSummary:
+    """Bounded metadata used to decide whether one host may be preselected."""
+
+    count: int
+    only_host: str | None
 
 
 class KeyManager:
@@ -246,15 +260,30 @@ class KeyManager:
                 "The credential backend failed while storing credentials"
             ) from exc
 
-    def get_fdm_credentials(self) -> FdmCredentials:
-        """Return the default FDM record or fail without partial results."""
+    @staticmethod
+    def _fdm_record_key(host: str) -> str:
+        digest = hashlib.sha256(validate_host(host).encode("utf-8")).hexdigest()
+        return f"{FDM_RECORD_PREFIX}{digest}"
+
+    @staticmethod
+    def _validate_fdm_record_keys(value: object) -> list[str]:
+        if not isinstance(value, list):
+            raise InvalidStoredCredentialsError("Stored FDM credential index is malformed")
+        expected_length = len(FDM_RECORD_PREFIX) + 64
+        if not all(
+            isinstance(key, str)
+            and len(key) == expected_length
+            and key.startswith(FDM_RECORD_PREFIX)
+            and all(character in "0123456789abcdef" for character in key[len(FDM_RECORD_PREFIX):])
+            for key in value
+        ):
+            raise InvalidStoredCredentialsError("Stored FDM credential index is malformed")
+        return value
+
+    def _legacy_fdm_credentials(self) -> FdmCredentials | None:
         values = {key: self._get(key) for key in FDM_KEYS}
-        missing = [key.removeprefix("fdm-") for key, value in values.items() if not value]
-        if missing:
-            raise CredentialsNotFoundError(
-                f"FDM {', '.join(missing)} {'are' if len(missing) > 1 else 'is'} "
-                "empty or not stored; run 'key_manager.py store'"
-            )
+        if not all(values.values()):
+            return None
         try:
             return FdmCredentials(
                 host=validate_host(values[FDM_HOST_KEY]),
@@ -273,24 +302,119 @@ class KeyManager:
                 "Stored FDM credentials are malformed; update the FDM credential record"
             ) from exc
 
+    def fdm_credential_summary(self) -> FdmCredentialSummary:
+        """Return only a record count and sole host; never enumerate all hosts."""
+        raw_count = self._get(FDM_RECORD_COUNT_KEY)
+        if raw_count is None:
+            legacy = self._legacy_fdm_credentials()
+            return FdmCredentialSummary(1, legacy.host) if legacy else FdmCredentialSummary(0, None)
+        try:
+            count = int(raw_count)
+        except ValueError as exc:
+            raise InvalidStoredCredentialsError("Stored FDM credential index is malformed") from exc
+        if count < 0:
+            raise InvalidStoredCredentialsError("Stored FDM credential index is malformed")
+        only_host = self._get(FDM_ONLY_HOST_KEY) if count == 1 else None
+        if count == 1 and not only_host:
+            raise InvalidStoredCredentialsError("Stored FDM credential index lacks its sole host")
+        return FdmCredentialSummary(count, validate_host(only_host) if only_host else None)
+
+    def get_fdm_credentials(self, host: str | None = None) -> FdmCredentials:
+        """Return the exact host record, or the sole record when host is omitted."""
+        summary = self.fdm_credential_summary()
+        if host is None:
+            if summary.count > 1:
+                raise CredentialsNotFoundError(
+                    "Multiple FDM credential records are stored; specify an exact host"
+                )
+            host = summary.only_host
+        if not host:
+            raise CredentialsNotFoundError(
+                "FDM credentials are empty or not stored; run 'key_manager.py store'"
+            )
+        normalized_host = validate_host(host)
+        raw_record = self._get(self._fdm_record_key(normalized_host))
+        if raw_record is None:
+            legacy = self._legacy_fdm_credentials()
+            if legacy is not None and legacy.host == normalized_host:
+                return legacy
+            raise CredentialsNotFoundError(
+                "No FDM credential record is stored for the specified host"
+            )
+        try:
+            record = json.loads(raw_record)
+            if not isinstance(record, dict) or record.get("version") != 1:
+                raise ValueError
+            credentials = FdmCredentials(
+                host=validate_host(record.get("host")),
+                port=validate_port(record.get("port")),
+                username=validate_opaque_value(
+                    record.get("username"), name="stored FDM username",
+                    maximum=MAX_CREDENTIAL_LENGTH,
+                ),
+                password=validate_opaque_value(
+                    record.get("password"), name="stored FDM password",
+                    maximum=MAX_CREDENTIAL_LENGTH,
+                ),
+            )
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise InvalidStoredCredentialsError("Stored FDM credential record is malformed") from exc
+        if credentials.host != normalized_host:
+            raise InvalidStoredCredentialsError("Stored FDM credential record host is inconsistent")
+        return credentials
+
     def store_fdm_credentials(
         self, *, host: str, port: int, username: str, password: str
     ) -> None:
         """Atomically store one default FDM record scoped by its device identity."""
-        values = {
-            FDM_HOST_KEY: validate_host(host),
-            FDM_PORT_KEY: str(validate_port(port)),
-            FDM_USERNAME_KEY: validate_opaque_value(
+        host = validate_host(host)
+        record_key = self._fdm_record_key(host)
+        record = json.dumps({
+            "version": 1, "host": host, "port": validate_port(port),
+            "username": validate_opaque_value(
                 username, name="username", maximum=MAX_CREDENTIAL_LENGTH
             ),
-            FDM_PASSWORD_KEY: validate_opaque_value(
+            "password": validate_opaque_value(
                 password, name="password", maximum=MAX_CREDENTIAL_LENGTH
             ),
-        }
-        old = {key: self._get(key) for key in FDM_KEYS}
+        }, separators=(",", ":"))
+        raw_keys = self._get(FDM_RECORD_KEYS_KEY)
         try:
-            for key, value in values.items():
-                self._backend.set_password(self.service_name, key, value)
+            record_keys = self._validate_fdm_record_keys(
+                json.loads(raw_keys) if raw_keys else []
+            )
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise InvalidStoredCredentialsError("Stored FDM credential index is malformed") from exc
+        legacy = self._legacy_fdm_credentials()
+        known_hosts = set()
+        summary = self.fdm_credential_summary()
+        if summary.only_host:
+            known_hosts.add(summary.only_host)
+        elif legacy is not None:
+            known_hosts.add(legacy.host)
+        is_new = record_key not in record_keys and host not in known_hosts
+        if record_key not in record_keys:
+            record_keys.append(record_key)
+        count = summary.count + (1 if is_new else 0)
+        if count == 0:
+            count = 1
+        only_host = host if count == 1 else None
+        updates = {
+            record_key: record,
+            FDM_RECORD_KEYS_KEY: json.dumps(record_keys, separators=(",", ":")),
+            FDM_RECORD_COUNT_KEY: str(count),
+            FDM_ONLY_HOST_KEY: only_host,
+        }
+        old = {key: self._get(key) for key in updates}
+        try:
+            for key, value in updates.items():
+                if value is None:
+                    try:
+                        self._backend.delete_password(self.service_name, key)
+                    except PasswordDeleteError:
+                        pass
+                else:
+                    self._backend.set_password(self.service_name, key, value)
         except Exception as exc:
             for key, value in old.items():
                 self._restore(key, value)
@@ -325,7 +449,15 @@ class KeyManager:
     def delete_fdm_credentials(self) -> None:
         """Delete the default FDM record; absent values are successful."""
         failures = []
-        for key in FDM_KEYS:
+        raw_keys = self._get(FDM_RECORD_KEYS_KEY)
+        try:
+            record_keys = self._validate_fdm_record_keys(
+                json.loads(raw_keys) if raw_keys else []
+            )
+        except json.JSONDecodeError as exc:
+            raise InvalidStoredCredentialsError("Stored FDM credential index is malformed") from exc
+        keys = (*FDM_KEYS, *record_keys, FDM_RECORD_KEYS_KEY, FDM_RECORD_COUNT_KEY, FDM_ONLY_HOST_KEY)
+        for key in keys:
             try:
                 self._backend.delete_password(self.service_name, key)
             except PasswordDeleteError:
@@ -347,12 +479,8 @@ class KeyManager:
         )
 
     def fdm_credential_status(self) -> FdmCredentialStatus:
-        return FdmCredentialStatus(
-            host_present=self._get(FDM_HOST_KEY) is not None,
-            port_present=self._get(FDM_PORT_KEY) is not None,
-            username_present=self._get(FDM_USERNAME_KEY) is not None,
-            password_present=self._get(FDM_PASSWORD_KEY) is not None,
-        )
+        complete = self.fdm_credential_summary().count > 0
+        return FdmCredentialStatus(complete, complete, complete, complete)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

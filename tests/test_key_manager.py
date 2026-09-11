@@ -74,6 +74,31 @@ class KeyManagerTests(unittest.TestCase):
         self.assertEqual(credentials.password, "secret")
         self.assertTrue(self.manager.fdm_credential_status().complete)
 
+    def test_multiple_fdm_hosts_are_looked_up_directly_without_enumeration(self):
+        self.manager.store_fdm_credentials(
+            host="192.0.2.10", port=443, username="first", password="first-secret"
+        )
+        self.manager.store_fdm_credentials(
+            host="192.0.2.20", port=8443, username="second", password="second-secret"
+        )
+        summary = self.manager.fdm_credential_summary()
+        self.assertEqual(summary.count, 2)
+        self.assertIsNone(summary.only_host)
+        self.assertEqual(
+            self.manager.get_fdm_credentials(host="192.0.2.20").username,
+            "second",
+        )
+        with self.assertRaisesRegex(CredentialsNotFoundError, "Multiple FDM"):
+            self.manager.get_fdm_credentials()
+
+    def test_single_fdm_host_summary_supports_safe_prefill(self):
+        self.manager.store_fdm_credentials(
+            host="192.0.2.10", port=443, username="operator", password="secret"
+        )
+        summary = self.manager.fdm_credential_summary()
+        self.assertEqual(summary.count, 1)
+        self.assertEqual(summary.only_host, "192.0.2.10")
+
     def test_store_cli_prompts_only_for_missing_fdm_group(self):
         self.manager.store_cisco_credentials("existing-id", "existing-secret")
         with patch("key_manager.KeyManager", return_value=self.manager), patch(

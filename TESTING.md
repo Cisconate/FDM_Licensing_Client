@@ -28,8 +28,11 @@ python example.py --help
 
 The direct OAuth check reads credentials from the native OS credential store,
 makes one live token request, and does not print credentials or the token. Use
-`python key_manager.py status` to check whether the Cisco and default FDM
-credential groups are complete without displaying their values.
+`python key_manager.py status` to check whether the Cisco and FDM credential
+groups are complete without displaying their values. Mocked GUI tests cover
+the scalable host-selection contract: a sole host is pre-filled, multiple
+hosts are not enumerated, and typing an exact host retains its matching stored
+username and password.
 The integration test skips only when the credential entries are genuinely
 absent. Empty environment secrets, credential-backend failures, rejected
 credentials, and OAuth service failures fail with distinct bounded messages.

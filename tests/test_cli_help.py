@@ -1,6 +1,10 @@
 """Tests that human-facing command help remains complete and side-effect free."""
 
 import io
+import os
+from pathlib import Path
+import subprocess
+import sys
 import unittest
 from contextlib import redirect_stdout
 
@@ -84,6 +88,20 @@ class CliHelpTests(unittest.TestCase):
         )
         self.assertNotIn("--authorization-code", install)
         self.assertIn("example:", install)
+
+    def test_gui_package_module_smoke_launch(self) -> None:
+        environment = os.environ.copy()
+        environment["QT_QPA_PLATFORM"] = "offscreen"
+        result = subprocess.run(
+            [sys.executable, "-m", "fdm_licensing.gui", "--smoke-test"],
+            cwd=Path(__file__).resolve().parents[1],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

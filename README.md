@@ -212,6 +212,91 @@ fdm-licensing capabilities
 fdm-licensing-gui
 ```
 
+The desktop application can also be launched directly from a source checkout:
+
+```bash
+python -m fdm_licensing.gui
+```
+
+The FTD Licensing Workflow page is a staged end-to-end flow. It loads the
+default FDM record from the OS credential vault when present, keeps its values
+concealed behind **Using Keychain** placeholders, shows certificate-trust
+status, and offers
+explicit **Bootstrap / refresh certificate**, **Inspect FDM**, **Configure
+PLR**, **Select account and reserve**, **Install authorization code**,
+and **Return PLR** operations. Later operations remain disabled until their
+prerequisites are available. Certificate fingerprints must still be verified
+through a trusted channel before the fetched certificate is trusted. Choosing
+No leaves the workflow open and reports that the fingerprint was not confirmed;
+choosing Yes reports that certificate trust is ready and directs the operator
+to inspect FDM next.
+
+Available workflow actions are shown as light-green buttons with black text and
+borders. Actions whose prerequisites are not yet satisfied remain white with
+light-gray text and borders, providing an immediate visual indication of which
+steps can be performed as the workflow progresses.
+
+Stored FDM host, port, username, and password values are defaults rather than
+forced settings. A nonempty value directly entered into any corresponding
+workflow field overrides that field's vault value for the operation. Clearing
+the field removes its override and reactivates the stored default. Programmatic
+field hydration does not itself count as an override, and passwords remain
+masked and are cleared from the visible field after command construction. For
+security, the stored password is used only when the effective host, port, and
+username still match its stored device identity; overriding that identity also
+requires a password for the selected device. The shared handoff field is
+labeled **Authorization or Return code (generated or pasted)** because its
+purpose depends on the active workflow direction.
+
+The **Credential Management** page manages both Cisco API credentials and
+device-scoped FDM records. It can store or replace a host record, inspect
+whether FDM records exist, or delete the stored FDM records
+without displaying stored values. Saving or deleting it immediately refreshes
+the licensing workflow's keychain state. The workflow username has no assumed
+`admin` default. Empty Host, Username, and Password fields are red when no
+applicable vault value exists, show **Using Keychain** when a usable stored
+value exists, and return to the normal style when the operator supplies a
+value.
+
+The workflow Host field is intentionally a plain text selector, not a combo
+box. With one stored FDM record its host is pre-filled. With multiple records
+the field remains blank and the operator types the desired host; the application
+then performs an exact lazy keychain lookup without fetching or displaying a
+host list. Entering the same host as a stored record preserves its associated
+username and password—the password field does not become required merely
+because the host was typed explicitly.
+
+Small clipboard and disk buttons beside the handoff field copy the displayed
+code through Qt's platform clipboard or save it atomically as a text file. This
+works through the same Qt interface on macOS, Linux, and Windows; POSIX file
+saves receive owner-only permissions. Status messages never repeat the code.
+Because an FDM return code may not be displayed again, generating one no longer
+opens an immediate Cisco-submission prompt. The code remains visible for copy
+or save, and **Install Authorization Code** changes to **Submit Return Code**;
+the operator explicitly selects that action when the code has been preserved.
+
+Workflow controls are rendered from presentation-neutral operation metadata in
+`fdm_licensing.capabilities`; business logic and recovery behavior remain in
+the shared workflow service and GUI controller. This keeps navigation and
+common operation controls registry-driven without incorrectly treating the
+OpenAPI schema as a complete description of operator workflow policy.
+
+Every visible background operation uses the shared activity panel at the
+bottom of its page. While work is running, an indeterminate animated bar and
+elapsed-time counter show that the application remains responsive. Certificate
+fetches show their five-second connection-timeout window, and PLR request-code
+generation shows its 60-second readiness window. Other API operations report
+elapsed time without presenting a fabricated completion percentage. The panel
+remains visible after completion or failure so the outcome is not lost when the
+operator looks away. Detailed phase-based reservation and return progress is a
+separate future enhancement.
+
+For a noninteractive offscreen launch check, use:
+
+```bash
+QT_QPA_PLATFORM=offscreen python -m fdm_licensing.gui --smoke-test
+```
+
 The CLI exposes both an end-to-end Universal PLR command and staged recovery
 commands. `run` carries the authorization code in memory from Cisco reservation
 through FDM installation. `inspect` is read-only; `reserve` stops after Cisco;

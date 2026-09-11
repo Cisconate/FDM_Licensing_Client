@@ -21,6 +21,7 @@ from key_manager import CiscoClientCredentials, KeyManager
 
 from .models import (
     CiscoCredentialsCommand,
+    FdmCredentialsCommand,
     FdmBootstrapCommand,
     FdmConnectionCommand,
     OperationResult,
@@ -51,6 +52,38 @@ class CredentialService:
         self._manager_factory().delete_cisco_credentials()
         return OperationResult(
             "Cisco credentials", "Stored Cisco credentials were removed."
+        )
+
+
+class FdmCredentialService:
+    """Manage the default device-scoped FDM record without exposing its values."""
+
+    def __init__(self, manager_factory: Callable[[], KeyManager] = KeyManager) -> None:
+        self._manager_factory = manager_factory
+
+    def status(self) -> OperationResult:
+        status = self._manager_factory().fdm_credential_status()
+        state = "complete" if status.complete else "incomplete"
+        return OperationResult(
+            "FDM credential status",
+            f"FDM credential record is {state} in the operating-system vault.",
+        )
+
+    def store(self, command: FdmCredentialsCommand) -> OperationResult:
+        self._manager_factory().store_fdm_credentials(
+            host=command.host,
+            port=command.port,
+            username=command.username,
+            password=command.password,
+        )
+        return OperationResult(
+            "FDM credentials", "FDM credentials stored in the operating-system vault."
+        )
+
+    def delete(self) -> OperationResult:
+        self._manager_factory().delete_fdm_credentials()
+        return OperationResult(
+            "FDM credentials", "Stored FDM credentials were removed."
         )
 
 

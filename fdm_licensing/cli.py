@@ -124,8 +124,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _fdm_command(args) -> FdmConnectionCommand:
+    manager = KeyManager()
     try:
-        stored = KeyManager().get_fdm_credentials()
+        if args.host:
+            stored = manager.get_fdm_credentials(host=args.host)
+        else:
+            stored = manager.get_fdm_credentials()
     except CredentialsNotFoundError:
         stored = None
     host = args.host or (stored.host if stored is not None else None)
@@ -133,6 +137,10 @@ def _fdm_command(args) -> FdmConnectionCommand:
         if not sys.stdin.isatty():
             raise ValueError("--host is required when input is not interactive")
         host = input("FDM hostname or IP address: ").strip()
+        try:
+            stored = manager.get_fdm_credentials(host=host)
+        except CredentialsNotFoundError:
+            stored = None
     port = args.port or (
         stored.port if stored is not None and stored.host == host else 443
     )

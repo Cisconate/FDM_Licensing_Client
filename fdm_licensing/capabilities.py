@@ -30,6 +30,43 @@ class Capability:
     available: bool = True
 
 
+@dataclass(frozen=True, slots=True)
+class WorkflowOperation:
+    """Presentation-neutral metadata for one operator-visible workflow step."""
+
+    id: str
+    title: str
+    risk: OperationRisk
+    handler: str
+    requires: tuple[str, ...] = ()
+
+
+FTD_LICENSING_OPERATIONS: tuple[WorkflowOperation, ...] = (
+    WorkflowOperation(
+        "bootstrap", "Bootstrap / refresh certificate", OperationRisk.AUTHENTICATION,
+        "_bootstrap_certificate", ("connection",),
+    ),
+    WorkflowOperation(
+        "inspect", "Inspect FDM", OperationRisk.READ_ONLY, "_inspect", ("connection",),
+    ),
+    WorkflowOperation(
+        "request_code", "Configure PLR", OperationRisk.MUTATING,
+        "_generate_request_code", ("inspection",),
+    ),
+    WorkflowOperation(
+        "reserve", "Select account and reserve", OperationRisk.MUTATING,
+        "_start_reservation", ("request_code",),
+    ),
+    WorkflowOperation(
+        "install", "Install authorization code", OperationRisk.MUTATING,
+        "_install", ("inspection", "authorization_code"),
+    ),
+    WorkflowOperation(
+        "return", "Return PLR", OperationRisk.MUTATING, "_start_return", ("inspection",),
+    ),
+)
+
+
 CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         id="workflow.ftd-licensing",
@@ -50,8 +87,8 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         id="cisco.credentials",
         category=CapabilityCategory.CISCO,
-        title="Cisco Credentials",
-        description="Store and inspect Cisco API credential availability.",
+        title="Credential Management",
+        description="Manage Cisco API and default FDM credentials in the OS vault.",
         risk=OperationRisk.LOCAL,
         page_key="credentials",
     ),
