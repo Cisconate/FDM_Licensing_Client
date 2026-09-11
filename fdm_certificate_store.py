@@ -6,6 +6,8 @@ import socket
 import ssl
 import tempfile
 import math
+import hashlib
+import re
 from pathlib import Path
 
 from security_validation import (
@@ -17,6 +19,9 @@ from security_validation import (
 
 DEFAULT_BUNDLE_NAME = "fdm-ca-bundle.pem"
 MAX_CERTIFICATE_BUNDLE_BYTES = 2 * 1024 * 1024
+_PEM_CERTIFICATE = re.compile(
+    r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", re.DOTALL
+)
 
 
 def certificate_bundle_path(
@@ -34,6 +39,24 @@ def certificate_bundle_path(
         certificate_store_dir, name="certificate_store_dir"
     )
     return store_dir / validate_plain_filename(bundle_name)
+
+
+def certificate_sha256_fingerprint(bundle_path: str | Path) -> str:
+    """Return the colon-delimited SHA-256 fingerprint of the last PEM certificate."""
+    path = resolve_operator_path(bundle_path, name="bundle_path")
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("certificate bundle must be a regular file")
+    if path.stat().st_size > MAX_CERTIFICATE_BUNDLE_BYTES:
+        raise ValueError("certificate bundle exceeds the maximum size")
+    matches = _PEM_CERTIFICATE.findall(path.read_text(encoding="utf-8"))
+    if not matches:
+        raise ValueError("certificate bundle does not contain a PEM certificate")
+    try:
+        der = ssl.PEM_cert_to_DER_cert(matches[-1])
+    except ValueError as exc:
+        raise ValueError("certificate bundle contains an invalid PEM certificate") from exc
+    digest = hashlib.sha256(der).hexdigest().upper()
+    return ":".join(digest[index : index + 2] for index in range(0, len(digest), 2))
 
 
 def bootstrap_certificate_store(

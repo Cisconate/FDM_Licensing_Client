@@ -34,6 +34,13 @@ directly. Preserve public constructor and method behavior unless a change
 intentionally documents a compatibility break. Do not invent Cisco endpoint
 paths, payload schemas, or version policy.
 
+Design the system around cohesive, loosely coupled modules with clear
+interfaces. Within those modules, prefer focused operations that perform one
+well-defined responsibility. Make operations atomic where partial completion
+would create an invalid or ambiguous system state. Do not decompose code merely
+to make functions smaller; decompose where doing so creates a meaningful
+abstraction, reusable operation, test boundary, or failure boundary.
+
 FDM capability workflows must enter `FDMClient` through its context manager so
 authentication occurs before the system-information compatibility check. Add a
 tested `FdmApiProfile` for each newly supported FTD major/minor release and keep
@@ -45,19 +52,19 @@ the same bounded unsupported-version error from the shared service.
 
 | Responsibility | Primary module/API | Tests and related guidance |
 | --- | --- | --- |
-| Local FDM authentication and REST | `fdm_client.py` / `FDMClient` | `test_security_validation.py`; add focused FDM tests; `SECURITY.md` |
-| FDM certificate bootstrap | `fdm_certificate_store.py` | `test_security_validation.py`; add focused certificate tests; `SECURITY.md` |
-| FDM Universal PLR operations | `fdm_plr_client.py` / `FdmPlrClient` | `test_plr_workflow.py`; `PLR_WORKFLOW.md`; `SECURITY.md` |
-| FTD compatibility and API profiles | `fdm_compatibility.py` | `test_fdm_compatibility.py`; README; validate before capability calls |
-| Cisco OAuth token generation | `cisco_support_token_client.py` / `CiscoSupportTokenClient` | `test_key_manager.py`, `test_live_cisco_token.py`; credential guide |
-| Cisco credential storage | `key_manager.py` / `KeyManager` | `test_key_manager.py`; credential guide |
-| Smart Licensing requests | `cisco_support_api_client.py` / `CiscoPlrReservationClient` | `test_key_manager.py`, `test_security_validation.py`; add endpoint tests; `SECURITY.md` |
-| Shared boundary validation | `security_validation.py` | `test_security_validation.py`; `SECURITY.md` |
+| Local FDM authentication and REST | `fdm_client.py` / `FDMClient` | `tests/test_security_validation.py`; add focused FDM tests; `SECURITY.md` |
+| FDM certificate bootstrap | `fdm_certificate_store.py` | `tests/test_security_validation.py`; add focused certificate tests; `SECURITY.md` |
+| FDM Universal PLR operations | `fdm_plr_client.py` / `FdmPlrClient` | `tests/test_plr_workflow.py`; `PLR_WORKFLOW.md`; `SECURITY.md` |
+| FTD compatibility and API profiles | `fdm_compatibility.py` | `tests/test_fdm_compatibility.py`; README; validate before capability calls |
+| Cisco OAuth token generation | `cisco_support_token_client.py` / `CiscoSupportTokenClient` | `tests/test_key_manager.py`, `tests/test_live_cisco_token.py`; credential guide |
+| Cisco credential storage | `key_manager.py` / `KeyManager` | `tests/test_key_manager.py`; credential guide |
+| Smart Licensing requests | `cisco_support_api_client.py` / `CiscoPlrReservationClient` | `tests/test_key_manager.py`, `tests/test_security_validation.py`; add endpoint tests; `SECURITY.md` |
+| Shared boundary validation | `security_validation.py` | `tests/test_security_validation.py`; `SECURITY.md` |
 | CLI/environment behavior | `example.py` and module `main` functions | Add or update focused CLI tests; README |
 | CI and agent test policy | `.github/workflows`, `TESTING.md` | Pull-request template |
-| Shared application workflows | `fdm_licensing/services.py` | `test_application.py` |
-| CLI commands and desktop menu | `fdm_licensing/cli.py`, `fdm_licensing/gui` | `test_application.py`; `PACKAGING.md` |
-| Capability registration | `fdm_licensing/capabilities.py` | `test_application.py` |
+| Shared application workflows | `fdm_licensing/services.py` | `tests/test_application.py` |
+| CLI commands and desktop menu | `fdm_licensing/cli.py`, `fdm_licensing/gui` | `tests/test_application.py`; `PACKAGING.md` |
+| Capability registration | `fdm_licensing/capabilities.py` | `tests/test_application.py` |
 | Future enhancements and priorities | `ROADMAP.md` | Create a linked issue when work is scheduled |
 
 ## Security invariants
@@ -121,6 +128,10 @@ credentials through the approved OS credential store. Hosted workflows must
 read credentials from protected CI secrets. A missing credential or endpoint
 causes a clearly reported skip; an available but invalid credential causes a
 test failure. Report live-test pass, failure, or skip status in the final result.
+
+Agent-executed macOS Keychain tests must use elevated permissions when the
+execution sandbox otherwise blocks native Keychain access. Do not interpret a
+sandbox-denied Keychain read as credential absence or credential rejection.
 
 When a request includes `Test requirement: <behavior>` or `[test-required]`,
 treat the stated behavior as an acceptance criterion. Add or update a focused

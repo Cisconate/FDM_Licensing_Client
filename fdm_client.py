@@ -65,6 +65,24 @@ class FDMRequestError(FDMError):
     """An FDM REST API request failed."""
 
 
+class _PinnedCertificateAdapter(HTTPAdapter):
+    """Verify the certificate chain while omitting DNS/IP hostname matching.
+
+    This adapter is appropriate only when the leaf certificate was fetched,
+    fingerprint-verified out of band, and used as the explicit trust anchor.
+    """
+
+    def init_poolmanager(
+        self, connections: int, maxsize: int, block: bool = False, **pool_kwargs: Any
+    ) -> None:
+        pool_kwargs["assert_hostname"] = False
+        super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
+
+    def proxy_manager_for(self, proxy: str, **proxy_kwargs: Any) -> Any:
+        proxy_kwargs["assert_hostname"] = False
+        return super().proxy_manager_for(proxy, **proxy_kwargs)
+
+
 @dataclass(slots=True)
 class TokenState:
     access_token: str
@@ -111,6 +129,10 @@ class FDMClient:
             When False, skip certificate verification. Use this only during
             initial setup or other controlled environments where the device
             is using a self-generated certificate.
+        allow_pinned_certificate_hostname_mismatch:
+            Preserve certificate validation but omit hostname matching for an
+            explicitly pinned, out-of-band fingerprint-verified FDM certificate.
+            Disabled by default and invalid when certificate verification is off.
         port:
             HTTPS management port, normally 443.
         api_version:
@@ -136,6 +158,7 @@ class FDMClient:
         ca_bundle: str | Path | None = None,
         certificate_store_dir: str | Path | None = None,
         verify_certificate: bool = True,
+        allow_pinned_certificate_hostname_mismatch: bool = False,
         port: int = 443,
         api_version: str = "latest",
         timeout: tuple[float, float] = (5.0, 30.0),
@@ -149,6 +172,14 @@ class FDMClient:
         verify_certificate = validate_bool(
             verify_certificate, name="verify_certificate"
         )
+        allow_pinned_certificate_hostname_mismatch = validate_bool(
+            allow_pinned_certificate_hostname_mismatch,
+            name="allow_pinned_certificate_hostname_mismatch",
+        )
+        if allow_pinned_certificate_hostname_mismatch and not verify_certificate:
+            raise ValueError(
+                "pinned-certificate hostname override requires certificate verification"
+            )
         debug_logging = validate_bool(debug_logging, name="debug_logging")
         username = validate_opaque_value(
             username, name="username", maximum=MAX_CREDENTIAL_LENGTH
@@ -203,7 +234,12 @@ class FDMClient:
 
         # No automatic retries are configured for POST/PUT/PATCH/DELETE.
         # Blindly replaying a write can duplicate or alter configuration.
-        self.session.mount("https://", HTTPAdapter(max_retries=0))
+        adapter = (
+            _PinnedCertificateAdapter(max_retries=0)
+            if allow_pinned_certificate_hostname_mismatch
+            else HTTPAdapter(max_retries=0)
+        )
+        self.session.mount("https://", adapter)
 
     def __enter__(self) -> "FDMClient":
         try:
@@ -216,6 +252,13 @@ class FDMClient:
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         self.close()
+
+    @property
+    def system_information(self) -> Mapping[str, Any]:
+        """Return the validated-session system information already read at login."""
+        if self._compatibility is None:
+            raise FDMError("FDM compatibility handshake has not completed")
+        return self._compatibility.system_information
 
     @staticmethod
     def _safe_error_text(response: Response, limit: int = 1000) -> str:

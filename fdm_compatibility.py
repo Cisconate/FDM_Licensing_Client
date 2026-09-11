@@ -42,6 +42,7 @@ class FdmApiProfile:
     smart_agent_connections_path: str
     plr_request_codes_path: str
     install_plr_code_path: str
+    cancel_plr_reservation_path: str
 
     def supports(self, version: FtdSoftwareVersion) -> bool:
         return (version.major, version.minor) == (self.major, self.minor)
@@ -52,8 +53,9 @@ FTD_7_6_PROFILE = FdmApiProfile(
     major=7,
     minor=6,
     smart_agent_connections_path="license/smartagentconnections",
-    plr_request_codes_path="license/plrrequestcodes",
+    plr_request_codes_path="license/operational/plrrequestcode",
     install_plr_code_path="license/action/installplrcode",
+    cancel_plr_reservation_path="license/action/cancelreservation",
 )
 SUPPORTED_FDM_PROFILES: tuple[FdmApiProfile, ...] = (FTD_7_6_PROFILE,)
 
@@ -62,6 +64,7 @@ SUPPORTED_FDM_PROFILES: tuple[FdmApiProfile, ...] = (FTD_7_6_PROFILE,)
 class FdmCompatibility:
     software_version: FtdSoftwareVersion
     profile: FdmApiProfile
+    system_information: Mapping[str, Any]
 
 
 def parse_software_version(value: object) -> FtdSoftwareVersion:
@@ -91,7 +94,7 @@ def detect_fdm_compatibility(client: JsonReader) -> FdmCompatibility:
     version = parse_software_version(data.get("softwareVersion"))
     for profile in SUPPORTED_FDM_PROFILES:
         if profile.supports(version):
-            return FdmCompatibility(version, profile)
+            return FdmCompatibility(version, profile, dict(data))
     supported = ", ".join(f"{item.major}.{item.minor}.x" for item in SUPPORTED_FDM_PROFILES)
     raise FdmCompatibilityError(
         f"FTD {version.raw} is unsupported; supported releases: {supported}"

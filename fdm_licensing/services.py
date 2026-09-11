@@ -12,9 +12,12 @@ from cisco_support_api_client import (
     SmartAccount,
     VirtualAccount,
 )
-from fdm_certificate_store import bootstrap_certificate_store
+from fdm_certificate_store import (
+    bootstrap_certificate_store,
+    certificate_sha256_fingerprint,
+)
 from fdm_client import FDMClient
-from key_manager import KeyManager
+from key_manager import CiscoClientCredentials, KeyManager
 
 from .models import (
     CiscoCredentialsCommand,
@@ -56,12 +59,14 @@ class CiscoAuthenticationService:
         self,
         manager_factory: Callable[[], KeyManager] = KeyManager,
         client_factory: Callable[..., CiscoSupportTokenClient] = CiscoSupportTokenClient,
+        credentials: CiscoClientCredentials | None = None,
     ) -> None:
         self._manager_factory = manager_factory
         self._client_factory = client_factory
+        self._credentials = credentials
 
     def validate(self) -> OperationResult:
-        credentials = self._manager_factory().get_cisco_credentials()
+        credentials = self._credentials or self._manager_factory().get_cisco_credentials()
         client = self._client_factory(
             client_id=credentials.client_id,
             client_secret=credentials.client_secret,
@@ -86,14 +91,16 @@ class CiscoAccountService:
         token_client_factory: Callable[..., CiscoSupportTokenClient] = CiscoSupportTokenClient,
         licensing_client_factory: Callable[..., CiscoPlrReservationClient] = CiscoPlrReservationClient,
         profile: CiscoLicensingApiProfile = APX_SOFTWARE_API_PROFILE,
+        credentials: CiscoClientCredentials | None = None,
     ) -> None:
         self._manager_factory = manager_factory
         self._token_client_factory = token_client_factory
         self._licensing_client_factory = licensing_client_factory
         self._profile = profile
+        self._credentials = credentials
 
     def _clients(self) -> tuple[CiscoSupportTokenClient, CiscoPlrReservationClient]:
-        credentials = self._manager_factory().get_cisco_credentials()
+        credentials = self._credentials or self._manager_factory().get_cisco_credentials()
         tokens = self._token_client_factory(
             client_id=credentials.client_id, client_secret=credentials.client_secret
         )
@@ -125,9 +132,12 @@ class CiscoAccountService:
 
 class FdmCertificateService:
     def __init__(
-        self, bootstrap: Callable[..., object] = bootstrap_certificate_store
+        self,
+        bootstrap: Callable[..., object] = bootstrap_certificate_store,
+        fingerprint: Callable[[object], str] = certificate_sha256_fingerprint,
     ) -> None:
         self._bootstrap = bootstrap
+        self._fingerprint = fingerprint
 
     def bootstrap(self, command: FdmBootstrapCommand) -> OperationResult:
         path = self._bootstrap(
@@ -137,7 +147,8 @@ class FdmCertificateService:
         )
         return OperationResult(
             "FDM certificate",
-            f"Certificate saved to {path}. Verify its fingerprint through a trusted channel.",
+            f"Certificate saved to {path}. SHA-256 fingerprint: "
+            f"{self._fingerprint(path)}. Verify it through a trusted channel.",
         )
 
 

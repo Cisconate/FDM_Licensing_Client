@@ -20,7 +20,7 @@ python -m unittest discover -v
 python cisco_support_token_client.py --check
 
 # Focused integration-test form; skips if credentials are unavailable
-python -m unittest -v test_live_cisco_token
+python -m unittest -v tests.test_live_cisco_token
 
 # Discover all supported FDM example switches; performs no network request
 python example.py --help
@@ -28,18 +28,20 @@ python example.py --help
 
 The direct OAuth check reads credentials from the native OS credential store,
 makes one live token request, and does not print credentials or the token. Use
-`python key_manager.py status` to check whether a complete stored pair exists.
+`python key_manager.py status` to check whether the Cisco and default FDM
+credential groups are complete without displaying their values.
 The integration test skips only when the credential entries are genuinely
 absent. Empty environment secrets, credential-backend failures, rejected
 credentials, and OAuth service failures fail with distinct bounded messages.
 Do not treat a skipped integration test as proof that token retrieval works.
 
-Test files use the top-level `test_*.py` naming convention. Test methods should
+Test files live in the importable `tests/` package and use the `test_*.py`
+naming convention. Root-level discovery recursively finds them. Test methods should
 name the observable behavior they protect, such as
 `test_absolute_request_path_is_rejected_before_network_call`.
 
 The suite contains deterministic mocked tests and conditional live integration
-tests. `test_live_cisco_token.py` reads Cisco
+tests. `tests/test_live_cisco_token.py` reads Cisco
 credentials from environment variables when GitHub injects them, otherwise it
 checks the native operating-system credential store. It performs one real OAuth
 request when a complete credential pair exists and skips when none exists.
@@ -132,8 +134,10 @@ requires a documented read-only endpoint and separate integration test.
 
 On a developer workstation, `python -m unittest discover -v` checks the native
 keyring automatically. If the credentials were stored with `python
-key_manager.py store`, the live token test runs alongside the mocked tests. If
-they are absent, the live test reports `skipped`. A GitHub-hosted runner cannot
+key_manager.py store`, the live token test runs alongside the mocked tests. The
+stored FDM record can also drive authorized local device tests without a
+plaintext `.env` password. If Cisco credentials are absent, the live token test
+reports `skipped`. A GitHub-hosted runner cannot
 read the Windows Credential Manager on the computer that pushed the commit.
 
 Every test report must distinguish these outcomes:
@@ -146,6 +150,8 @@ Every test report must distinguish these outcomes:
 - Native credential-store access errors are failures, not missing-credential
   skips. On systems that sandbox Keychain or Credential Manager access, run the
   live test in the same approved host context as the application.
+- Agent-executed macOS Keychain validation must request elevated execution when
+  sandboxed execution cannot access the native Keychain.
 
 CI configuration belongs in the repository because it is reviewed and versioned
 with the code, applies consistently to every contributor, and can be reproduced

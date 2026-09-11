@@ -19,6 +19,7 @@ from cisco_support_token_client import (
 from key_manager import (
     CLIENT_ID_KEY,
     CLIENT_SECRET_KEY,
+    CISCO_CLIENT,
     CredentialAccessError,
     CredentialStorageError,
     CredentialsNotFoundError,
@@ -61,6 +62,45 @@ class KeyManagerTests(unittest.TestCase):
         self.assertEqual(credentials.client_id, "client-id-value")
         self.assertEqual(credentials.client_secret, "secret-value")
         self.assertTrue(self.manager.credential_status().complete)
+
+    def test_fdm_credentials_are_scoped_to_stored_device_identity(self):
+        self.manager.store_fdm_credentials(
+            host="FTD.EXAMPLE.COM", port=8443, username="admin", password="secret"
+        )
+        credentials = self.manager.get_fdm_credentials()
+        self.assertEqual(credentials.host, "ftd.example.com")
+        self.assertEqual(credentials.port, 8443)
+        self.assertEqual(credentials.username, "admin")
+        self.assertEqual(credentials.password, "secret")
+        self.assertTrue(self.manager.fdm_credential_status().complete)
+
+    def test_store_cli_prompts_only_for_missing_fdm_group(self):
+        self.manager.store_cisco_credentials("existing-id", "existing-secret")
+        with patch("key_manager.KeyManager", return_value=self.manager), patch(
+            "key_manager.input",
+            side_effect=["192.0.2.10", "", ""],
+        ), patch("key_manager.getpass.getpass", return_value="fdm-secret"), redirect_stdout(
+            io.StringIO()
+        ):
+            result = main(["store"])
+        self.assertEqual(result, 0)
+        self.assertEqual(self.manager.get_cisco_credentials().client_id, "existing-id")
+        self.assertEqual(self.manager.get_fdm_credentials().host, "192.0.2.10")
+
+    def test_update_cli_replaces_only_requested_cisco_group(self):
+        self.manager.store_cisco_credentials("old-id", "old-secret")
+        self.manager.store_fdm_credentials(
+            host="192.0.2.10", port=443, username="admin", password="fdm-secret"
+        )
+        with patch("key_manager.KeyManager", return_value=self.manager), patch(
+            "key_manager.input", return_value="new-id"
+        ), patch("key_manager.getpass.getpass", return_value="new-secret"), redirect_stdout(
+            io.StringIO()
+        ):
+            result = main(["update", CISCO_CLIENT])
+        self.assertEqual(result, 0)
+        self.assertEqual(self.manager.get_cisco_credentials().client_id, "new-id")
+        self.assertEqual(self.manager.get_fdm_credentials().password, "fdm-secret")
 
     def test_incomplete_credentials_fail(self):
         self.backend.set_password(self.manager.service_name, CLIENT_ID_KEY, "id")
@@ -121,6 +161,10 @@ class KeyManagerTests(unittest.TestCase):
 
     def test_status_cli_does_not_print_values(self):
         self.manager.store_cisco_credentials("sensitive-id", "sensitive-secret")
+        self.manager.store_fdm_credentials(
+            host="fdm.example.com", port=443,
+            username="sensitive-user", password="sensitive-password",
+        )
         output = io.StringIO()
         with patch("key_manager.KeyManager", return_value=self.manager):
             with redirect_stdout(output):
@@ -128,6 +172,8 @@ class KeyManagerTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertNotIn("sensitive-id", output.getvalue())
         self.assertNotIn("sensitive-secret", output.getvalue())
+        self.assertNotIn("sensitive-user", output.getvalue())
+        self.assertNotIn("sensitive-password", output.getvalue())
 
     def test_credentials_feed_token_provider_without_entering_licensing_client(self):
         self.manager.store_cisco_credentials("client-id", "client-secret")

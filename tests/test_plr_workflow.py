@@ -2,6 +2,7 @@
 
 import unittest
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from cisco_support_api_client import (
     APX_SOFTWARE_API_PROFILE,
@@ -9,6 +10,7 @@ from cisco_support_api_client import (
     CiscoPlrRequestError,
     CiscoPlrReservationClient,
     ExistingProductInstanceError,
+    ProductInstance,
     ReservationPreflight,
     SmartAccount,
     VirtualAccount,
@@ -64,7 +66,9 @@ class FdmPlrClientTests(unittest.TestCase):
         }
         codes = self.client.list_plr_request_codes()
         self.assertEqual(codes[0].code, "DE-ZNGFWv:request")
-        self.fdm.get_json.assert_called_once_with("license/plrrequestcodes")
+        self.fdm.get_json.assert_called_once_with(
+            "license/operational/plrrequestcode"
+        )
 
         self.fdm.get_json.return_value = {"items": [{"code": "bad\ncode"}]}
         with self.assertRaises(FdmPlrError):
@@ -84,10 +88,73 @@ class FdmPlrClientTests(unittest.TestCase):
             json={"type": "PLRAuthorizationCode", "code": code},
         )
 
+    def test_install_accepts_observed_variable_length_authorization_code(self) -> None:
+        response = Mock()
+        response.json.return_value = {"type": "PLRAuthorizationCode"}
+        self.fdm.request.return_value = response
+        code = "DADzdk-bUCHFW-QT5X1o-CSoRsD-9rJdgw-xhKaMh-aozpW2-e9VPES-yZ"
+        self.client.install_authorization_code(code)
+        self.fdm.request.assert_called_once_with(
+            "POST", "license/action/installplrcode",
+            json={"type": "PLRAuthorizationCode", "code": code},
+        )
+
     def test_invalid_authorization_code_fails_before_network(self) -> None:
         with self.assertRaises(ValueError):
             self.client.install_authorization_code("not-a-uplr-code")
         self.fdm.request.assert_not_called()
+
+    def test_generate_return_code_is_one_atomic_post(self) -> None:
+        self.client.get_return_identity = Mock()
+        response = Mock()
+        response.json.return_value = {
+            "type": "plrreleasecode", "code": "return-code", "id": "release-id"
+        }
+        self.fdm.request.return_value = response
+        result = self.client.generate_return_code()
+        self.assertEqual(result.code, "return-code")
+        self.fdm.request.assert_called_once_with(
+            "POST", "license/action/cancelreservation",
+            json={"type": "PLRReleaseCode"},
+        )
+
+    def test_return_identity_uses_authorized_status_and_system_serial(self) -> None:
+        self.fdm.get_json.return_value = {"items": [{
+                "registrationStatus": "UNIVERSAL_PLR",
+                "authorizationStatus": "AUTHORIZED",
+            }]}
+        self.fdm.system_information = {
+            "serialNumber": "ABC123", "platformModel": "Firepower 1010"
+        }
+        identity = self.client.get_return_identity()
+        self.assertEqual(identity.serial_number, "ABC123")
+        self.assertEqual(
+            [call.args[0] for call in self.fdm.get_json.call_args_list],
+            ["license/smartagentstatuses"],
+        )
+
+    def test_return_identity_rejects_non_authorized_state(self) -> None:
+        self.fdm.get_json.return_value = {"items": [{
+            "registrationStatus": "UNIVERSAL_PLR",
+            "authorizationStatus": "UNAUTHORIZED",
+        }]}
+        with self.assertRaisesRegex(FdmPlrError, "neither authorized"):
+            self.client.get_return_identity()
+
+    def test_finalize_return_deletes_only_connection_in_pending_state(self) -> None:
+        self.client.get_return_identity = Mock(return_value=Mock(
+            registration_status="PLR_DEACTIVATION_IN_PROGRESS"
+        ))
+        self.client.list_smart_agent_connections = Mock(
+            return_value=({"id": "connection-id"},)
+        )
+        response = Mock()
+        self.fdm.request.return_value = response
+        self.client.finalize_return()
+        self.fdm.request.assert_called_once_with(
+            "DELETE", "license/smartagentconnections/connection-id"
+        )
+        response.close.assert_called_once_with()
 
 
 class CiscoPlrExchangeTests(unittest.TestCase):
@@ -172,6 +239,60 @@ class CiscoPlrExchangeTests(unittest.TestCase):
         self.assertEqual(result[0].reservation_type, "UNIVERSAL")
         self.assertEqual(result[0].entitlement_tag, "plr-tag")
 
+    def test_license_summary_is_typed_and_does_not_double_subtract_reserved(self) -> None:
+        client = CiscoPlrReservationClient(bearer_token="token")
+        payload = {
+            "status": "SUCCESS", "nonce": "nonce", "message": "Retrieved",
+            "out_standing_reports": 0,
+            "summary": [{
+                "tag": "plr-tag", "entitled": 5, "future_entitled": 0,
+                "inuse": 2, "reserved": 2, "compliance_status": "IN_COMPLIANCE",
+                "display_name": "Universal PLR", "enforced": True,
+                "export_restricted": False,
+                "license_details": [{
+                    "quantity": 5, "start_date": "2026-Jan-01", "end_date": None,
+                    "subscription_id": None, "license_type": "PERPETUAL",
+                }],
+            }],
+        }
+        result = client._parse_license_summary(payload, "nonce")
+        self.assertEqual(result.items[0].available, 3)
+        self.assertEqual(result.items[0].license_details[0].license_type, "PERPETUAL")
+        client.close()
+
+    def test_license_summary_rejects_nonce_mismatch(self) -> None:
+        client = CiscoPlrReservationClient(bearer_token="token")
+        with self.assertRaisesRegex(CiscoPlrRequestError, "nonce"):
+            client._parse_license_summary(
+                {"status": "SUCCESS", "nonce": "other"}, "expected"
+            )
+        client.close()
+
+    def test_license_summary_sends_account_headers_and_correlated_nonce(self) -> None:
+        client = CiscoPlrReservationClient(bearer_token="token")
+        client.post_json = Mock(return_value={
+            "status": "SUCCESS", "nonce": "fixed-nonce", "message": "Retrieved",
+            "out_standing_reports": 0, "summary": [],
+        })
+        selection = AccountSelection(
+            SmartAccount("Example", "example.com", "10"),
+            VirtualAccount("Default", "20", True),
+        )
+        with patch("cisco_support_api_client.secrets.token_urlsafe", return_value="fixed-nonce"), patch(
+            "cisco_support_api_client.time.time", return_value=1234.5
+        ):
+            client.get_license_summary(selection)
+        client.post_json.assert_called_once_with(
+            client.profile.license_summary_path,
+            headers={
+                "X-CSW-REQUESTING-SYSTEM": '{"display_name":"FDM_Client"}',
+                "X-CSW-SMART-ACCOUNT-ID": "10",
+                "X-CSW-VIRTUAL-ACCOUNT-ID": "20",
+            },
+            json={"data": {"timestamp": 1234500, "nonce": "fixed-nonce", "tags": []}},
+        )
+        client.close()
+
     def test_universal_reservation_uses_contract_path_body_and_nested_code(self) -> None:
         client = CiscoPlrReservationClient(
             bearer_token="token", profile=APX_SOFTWARE_API_PROFILE
@@ -212,6 +333,72 @@ class CiscoPlrExchangeTests(unittest.TestCase):
             }]},
         )
 
+    def test_universal_return_uses_v3_contract(self) -> None:
+        client = CiscoPlrReservationClient(
+            bearer_token="token", profile=APX_SOFTWARE_API_PROFILE
+        )
+        client.post_json = Mock(return_value={
+            "status": "SUCCESS", "statusMessage": "removed",
+            "removeProductInstancesStatus": [{
+                "status": "SUCCESS", "statusMessage": "removed device",
+                "device": "udiPid:FPR-1010 udiSerialNumber:ABC123",
+            }],
+        })
+        selection = AccountSelection(
+            SmartAccount("Example", "example.com", "10"),
+            VirtualAccount("Default VA", "20", True),
+        )
+        instance = ProductInstance("device", "product-tag", "FPR-1010", "ABC123")
+        result = client.return_universal_plr(selection, instance, "return-code")
+        self.assertEqual(result.status, "SUCCESS")
+        client.post_json.assert_called_once_with(
+            "licensing/v3/accounts/example.com/devices/remove",
+            params={"virtualAccountName": "Default VA"},
+            json={"productInstancesRemoveRequests": [{
+                "sudi": {"udiPid": "FPR-1010", "udiSerialNumber": "ABC123"},
+                "productTagName": "product-tag", "returnCode": "return-code",
+            }]},
+        )
+        client.close()
+
+    def test_universal_return_rejects_nested_failure(self) -> None:
+        with self.assertRaisesRegex(CiscoPlrRequestError, "did not remove"):
+            CiscoPlrReservationClient._parse_plr_return({
+                "status": "SUCCESS", "removeProductInstancesStatus": [{
+                    "status": "FAILURE", "statusMessage": "not removed",
+                    "device": "device",
+                }],
+            })
+
+    def test_product_instance_verification_requires_exact_identity(self) -> None:
+        client = CiscoPlrReservationClient(bearer_token="token")
+        client.get_json = Mock(return_value={
+            "status": "SUCCESS", "devices": [{
+                "instanceName": "UDI_PID:FPR-1010; UDI_SN:ABC123;",
+                "productTagName": "product-tag",
+                "sudi": {"udiPid": "FPR-1010", "udiSerialNumber": "ABC123"},
+            }],
+        })
+        selection = AccountSelection(
+            SmartAccount("Example", "example.com", "10"),
+            VirtualAccount("Default", "20", True),
+        )
+        instance = ProductInstance("device", "product-tag", "FPR-1010", "ABC123")
+        self.assertTrue(client.product_instance_exists(selection, instance))
+        client.close()
+
+    def test_reservation_accepts_observed_variable_length_authorization_code(self) -> None:
+        request = "DB-ZFPR-1010:serial-nonce-02"
+        code = "DADzdk-bUCHFW-QT5X1o-CSoRsD-9rJdgw-xhKaMh-aozpW2-e9VPES-yZ"
+        result = CiscoPlrReservationClient._parse_universal_authorization(
+            {"status": "SUCCESS", "authorizationCodes": [{
+                "status": "SUCCESS", "reservationCode": request,
+                "authorizationCode": code,
+            }]},
+            request,
+        )
+        self.assertEqual(result.authorization_code, code)
+
     def test_preflight_finds_existing_product_instance_without_mutation(self) -> None:
         client = CiscoPlrReservationClient(
             bearer_token="token", profile=APX_SOFTWARE_API_PROFILE
@@ -246,6 +433,65 @@ class CiscoPlrExchangeTests(unittest.TestCase):
                 "offset": 0,
             },
         )
+
+    def test_return_preflight_finds_instance_by_ftd_serial(self) -> None:
+        client = CiscoPlrReservationClient(bearer_token="token")
+        client.get_json = Mock(return_value={
+            "status": "SUCCESS", "devices": [{
+                "instanceName": "device", "productTagName": "tag",
+                "sudi": {"udiPid": "FPR-1010", "udiSerialNumber": "ABC123"},
+            }],
+        })
+        selection = AccountSelection(
+            SmartAccount("Example", "example.com", "10"),
+            VirtualAccount("Default", "20", True),
+        )
+        result = client.preflight_plr_return(selection, "ABC123")
+        self.assertEqual(result.product_id, "FPR-1010")
+        client.close()
+
+    def test_global_device_lookup_returns_owning_accounts(self) -> None:
+        client = CiscoPlrReservationClient(bearer_token="token")
+        client.get_json = Mock(return_value={
+            "status": "COMPLETE", "data": [{
+                "sudi": {"udiPid": "FPR-1010", "udiSerialNumber": "ABC123"},
+                "software_tag": "product-tag",
+                "account": {
+                    "name": "Federal Team", "domain": "federal.example",
+                    "account_id": "10", "virtual_account_name": "nstapp",
+                    "virtual_account_id": "20", "default": False,
+                },
+            }],
+        })
+        location = client.locate_product_instance("ABC123")
+        self.assertEqual(location.selection.smart_account.name, "Federal Team")
+        self.assertEqual(location.selection.virtual_account.name, "nstapp")
+        self.assertEqual(location.instance.product_id, "FPR-1010")
+        client.get_json.assert_called_once_with(
+            "licensing/v2/device/search",
+            params={"udi_serial_number": "ABC123"},
+            headers={"X-CSW-REQUESTING-SYSTEM": '{"display_name":"FDM_Client"}'},
+        )
+        client.close()
+
+    def test_global_device_lookup_accepts_observed_ok_single_object_shape(self) -> None:
+        client = CiscoPlrReservationClient(bearer_token="token")
+        client.get_json = Mock(return_value={
+            "status": "OK", "message": "SUCCESS", "data": {
+                "sudi": {"udiPid": "FPR-1010", "udiSerialNumber": "ABC123"},
+                "software_tag": "product-tag",
+                "account": {
+                    "name": "Federal Team", "domain": "federal.example",
+                    "account_id": 10, "virtual_account_name": "nstapp",
+                    "virtual_account_id": 20, "default": False,
+                },
+                "licenses": [],
+            },
+        })
+        location = client.locate_product_instance("ABC123")
+        self.assertEqual(location.selection.smart_account.account_id, "10")
+        self.assertEqual(location.selection.virtual_account.account_id, "20")
+        client.close()
 
     def test_reservation_is_blocked_when_preflight_finds_existing_instance(self) -> None:
         client = CiscoPlrReservationClient(bearer_token="token")

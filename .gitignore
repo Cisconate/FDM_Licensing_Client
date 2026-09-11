@@ -6,6 +6,8 @@
 !/.github/**
 !/fdm_licensing/
 !/fdm_licensing/**
+!/tests/
+!/tests/**
 
 # Python-generated files (also covered by the directory rule above).
 __pycache__/

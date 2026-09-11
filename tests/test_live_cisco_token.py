@@ -65,7 +65,7 @@ class IntegrationCredentialLoadingTests(unittest.TestCase):
         manager = Mock()
         manager.get_cisco_credentials.side_effect = CredentialsNotFoundError("missing")
         with patch.dict(os.environ, {}, clear=True), patch(
-            "test_live_cisco_token.KeyManager", return_value=manager
+            "tests.test_live_cisco_token.KeyManager", return_value=manager
         ):
             self.assertIsNone(_load_integration_credentials())
 
@@ -75,7 +75,7 @@ class IntegrationCredentialLoadingTests(unittest.TestCase):
         manager = Mock()
         manager.get_cisco_credentials.side_effect = CredentialAccessError("no access")
         with patch.dict(os.environ, {}, clear=True), patch(
-            "test_live_cisco_token.KeyManager", return_value=manager
+            "tests.test_live_cisco_token.KeyManager", return_value=manager
         ):
             with self.assertRaises(CredentialAccessError):
                 _load_integration_credentials()

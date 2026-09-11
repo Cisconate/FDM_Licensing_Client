@@ -2,9 +2,10 @@
 
 ## Purpose and design
 
-`key_manager.py` stores the Cisco OAuth Client ID and Client Secret in the
-operating system credential store. It supports macOS, Windows, and Linux via
-Python `keyring` and refuses known null, failing, or plaintext backends.
+`key_manager.py` stores both the Cisco OAuth Client ID/Secret and one default,
+device-scoped FDM host/port/username/password record in the operating-system
+credential store. It supports macOS, Windows, and Linux via Python `keyring`
+and refuses known null, failing, or plaintext backends.
 
 The data flow is:
 
@@ -16,6 +17,40 @@ The data flow is:
 Bearer tokens stay in memory and are never stored by the key manager. The
 licensing client remains independent of credential storage.
 
+Cisco OAuth credentials are application-wide. FDM credentials are bound to the
+stored host, HTTPS port, and username; the application never applies the saved
+password to a different device identity. This follows the usual industry model
+of addressing a secret by provider, resource, and principal rather than using
+one global device password.
+
+## Credential-manager commands
+
+`store` fills only incomplete groups. If `CISCO_CLIENT` is complete and `FDM`
+is absent, it prompts only for the FDM record:
+
+```bash
+python key_manager.py store
+```
+
+Explicitly replace one group when credentials rotate or were entered
+incorrectly:
+
+```bash
+python key_manager.py update CISCO_CLIENT
+python key_manager.py update FDM
+```
+
+Inspect presence without displaying values, or delete selected groups:
+
+```bash
+python key_manager.py status
+python key_manager.py delete CISCO_CLIENT
+python key_manager.py delete FDM
+python key_manager.py delete ALL
+```
+
+`delete` defaults to `ALL` and requests confirmation unless `--yes` is used.
+
 ## Diagnostic categories
 
 Credential and OAuth diagnostics report the narrowest conclusion supported by
@@ -23,7 +58,7 @@ the failing boundary:
 
 | Message category | Meaning | Operator action |
 | --- | --- | --- |
-| Client ID/Secret empty or not stored | One or both named entries are absent or empty | Run `python key_manager.py store` |
+| Cisco or FDM field empty/not stored | One or more fields in the named credential group are absent | Run `python key_manager.py store` |
 | Stored credentials malformed | A retrieved value is not text, contains control characters, or exceeds the size limit | Replace the stored pair |
 | Credential store unavailable | `keyring` is missing, selected an insecure/null backend, or cannot initialize a native backend | Install requirements and configure a supported native backend |
 | Credential store could not be accessed | The selected macOS Keychain, Windows Credential Manager, or Linux secret service rejected or failed the read | Use the correct OS user, unlock the store, and authorize the Python executable |
@@ -108,8 +143,8 @@ Remove both entries with:
 python key_manager.py delete
 ```
 
-Never pass the secret on a command line, store it in `.env`, paste it into
-source, or print it for verification.
+Never pass a password or client secret on a command line, store it in `.env`,
+paste it into source, or print it for verification.
 
 Keychain authorization is process-sensitive. A command launched by an IDE,
 automation agent, or sandbox can be denied even when the same virtual-
@@ -117,6 +152,13 @@ environment Python succeeds in Terminal. That condition is reported as a
 Keychain access failure and is never treated as an absent credential pair.
 
 ## Application integration
+
+When a command needs Cisco credentials and no complete pair is stored, both
+presentations offer the same choices: enter a pair and use it only for the
+current process, or save it in the native operating-system vault for future
+runs. The CLI hides secret input and the GUI uses a masked field. Credential
+store access failures and malformed stored values are not treated as missing
+credentials and therefore do not silently fall back to a prompt.
 
 ```python
 from cisco_support_api_client import CiscoPlrReservationClient
@@ -151,7 +193,7 @@ test:
 python -m unittest -v
 ```
 
-Use `python -m unittest -v test_key_manager` when an explicitly mock-only
+Use `python -m unittest -v tests.test_key_manager` when an explicitly mock-only
 credential test run is needed.
 
 For an authorized live check, run `status`, retrieve credentials through

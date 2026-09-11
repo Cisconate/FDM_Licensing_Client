@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
 from fdm_client import FDMClient, FDMRequestError
-from security_validation import validate_opaque_value
+from security_validation import validate_opaque_value, validate_plr_authorization_code
 
 
 MAX_PLR_CODE_LENGTH = 16_384
-_UPLR_AUTHORIZATION_CODE = re.compile(r"^[A-Za-z0-9]{6}(?:-[A-Za-z0-9]{6}){5}$")
 
 
 class FdmPlrError(RuntimeError):
@@ -34,6 +32,21 @@ class PlrInstallResult:
     response: Mapping[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class PlrReturnCode:
+    """Sensitive return-code handoff produced by cancelling FDM reservation."""
+
+    code: str = dataclass_field(repr=False)
+    object_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FdmPlrReturnIdentity:
+    serial_number: str
+    platform_model: str
+    registration_status: str
+
+
 class FdmPlrClient:
     """Perform individual Universal PLR operations through an authenticated FDM client.
 
@@ -51,6 +64,42 @@ class FdmPlrClient:
         """Return current Smart Agent connection objects without changing state."""
         data = self._fdm.get_json(self._profile.smart_agent_connections_path)
         return self._validated_items(data, operation="Smart Agent connection list")
+
+    def get_return_identity(self, *, allow_pending: bool = False) -> FdmPlrReturnIdentity:
+        """Validate installed UPLR state and return stable device identity."""
+        statuses = self._validated_items(
+            self._fdm.get_json("license/smartagentstatuses"),
+            operation="Smart Agent status list",
+        )
+        if len(statuses) != 1:
+            raise FdmPlrError("FDM must expose exactly one Smart Agent status")
+        status = statuses[0]
+        registration = status.get("registrationStatus")
+        authorization = status.get("authorizationStatus")
+        authorized = registration == "UNIVERSAL_PLR" and authorization == "AUTHORIZED"
+        pending = (
+            registration == "PLR_DEACTIVATION_IN_PROGRESS"
+            and authorization == "NOT_AUTHORIZED"
+        )
+        if not authorized and not (allow_pending and pending):
+            raise FdmPlrError(
+                "FDM is neither authorized with Universal PLR nor in a supported pending-return state"
+            )
+        system = self._fdm.system_information
+        if not isinstance(system, Mapping):
+            raise FdmPlrError("FDM system information must be an object")
+        try:
+            return FdmPlrReturnIdentity(
+                serial_number=validate_opaque_value(
+                    system["serialNumber"], name="FTD serial number", maximum=128
+                ),
+                platform_model=validate_opaque_value(
+                    system["platformModel"], name="FTD platform model", maximum=256
+                ),
+                registration_status=registration,
+            )
+        except (KeyError, ValueError) as exc:
+            raise FdmPlrError("FDM returned invalid device identity") from exc
 
     def create_universal_plr_connection(self) -> Mapping[str, Any]:
         """Create a Smart Agent connection in Universal PLR mode."""
@@ -101,20 +150,61 @@ class FdmPlrClient:
 
     def install_authorization_code(self, authorization_code: str) -> PlrInstallResult:
         """Install one CSSM-issued Universal PLR authorization code on FDM."""
-        authorization_code = validate_opaque_value(
-            authorization_code,
-            name="authorization_code",
-            maximum=MAX_PLR_CODE_LENGTH,
-        )
-        if not _UPLR_AUTHORIZATION_CODE.fullmatch(authorization_code):
-            raise ValueError(
-                "authorization_code must contain six groups of six alphanumeric characters"
-            )
+        authorization_code = validate_plr_authorization_code(authorization_code)
         response = self._post_json(
             self._profile.install_plr_code_path,
             {"type": "PLRAuthorizationCode", "code": authorization_code},
         )
         return PlrInstallResult(response=response)
+
+    def generate_return_code(self) -> PlrReturnCode:
+        """Cancel the installed reservation once and return its CSSM handoff code."""
+        self.get_return_identity()
+        response = self._post_json(
+            self._profile.cancel_plr_reservation_path,
+            {"type": "PLRReleaseCode"},
+        )
+        try:
+            code = validate_opaque_value(
+                response["code"], name="PLR return code", maximum=MAX_PLR_CODE_LENGTH
+            )
+            object_id = response.get("id")
+            if object_id is not None:
+                object_id = validate_opaque_value(
+                    object_id, name="PLR return-code id", maximum=256
+                )
+        except (KeyError, ValueError) as exc:
+            raise FdmPlrError("FDM returned an invalid PLR return-code object") from exc
+        response_type = response.get("type")
+        if response_type is not None:
+            try:
+                validate_opaque_value(
+                    response_type, name="PLR return-code type", maximum=128
+                )
+            except ValueError as exc:
+                raise FdmPlrError(
+                    "FDM returned an invalid PLR return-code type"
+                ) from exc
+        return PlrReturnCode(code=code, object_id=object_id)
+
+    def finalize_return(self) -> None:
+        """Delete the sole Smart Agent connection after CSSM accepts the return."""
+        identity = self.get_return_identity(allow_pending=True)
+        if identity.registration_status != "PLR_DEACTIVATION_IN_PROGRESS":
+            raise FdmPlrError("FDM is not waiting for PLR return completion")
+        connections = self.list_smart_agent_connections()
+        if len(connections) != 1:
+            raise FdmPlrError("FDM must expose exactly one Smart Agent connection")
+        try:
+            connection_id = validate_opaque_value(
+                connections[0]["id"], name="Smart Agent connection id", maximum=256
+            )
+        except (KeyError, ValueError) as exc:
+            raise FdmPlrError("FDM returned an invalid Smart Agent connection") from exc
+        response = self._fdm.request(
+            "DELETE", f"{self._profile.smart_agent_connections_path}/{connection_id}"
+        )
+        response.close()
 
     def _post_json(self, path: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         return self._response_json(self._fdm.request("POST", path, json=payload), "POST")

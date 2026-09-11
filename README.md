@@ -157,11 +157,13 @@ automation must provide both switches. The desktop account-selection page uses
 the same discovery service and opens a selector only for multiple choices.
 
 For secure cross-platform credential storage, use `key_manager.py`. It stores
-the Cisco Client ID and Client Secret in the native OS credential store and
-never prints stored values:
+the Cisco Client ID/Secret and a device-scoped default FDM credential record in
+the native OS credential store and never prints stored values:
 
 ```bash
 python key_manager.py store
+python key_manager.py update CISCO_CLIENT
+python key_manager.py update FDM
 python key_manager.py status
 python cisco_support_token_client.py --check
 ```
@@ -189,7 +191,7 @@ macOS Keychain setup, application integration, and testing guidance.
 | `security_validation.py` | Shared trust-boundary validation and safe encoding |
 | `fdm_licensing/` | Shared services, CLI, capability registry, and desktop GUI |
 | `requirements.txt` | Runtime dependency constraints |
-| `test_*.py` | Unit tests plus the conditional live OAuth test |
+| `tests/` | Unit tests plus the conditional live OAuth test |
 | `TESTING.md` | Local, CI, and agent-generated testing policy |
 | `SECURITY.md` | Input-boundary inventory and coding standard |
 | `PACKAGING.md` | Windows GUI, executable build, and extension guide |
@@ -210,12 +212,79 @@ fdm-licensing capabilities
 fdm-licensing-gui
 ```
 
-The desktop menu exposes authentication, read-only Cisco account discovery, and
-the planned FTD licensing sequence. The library implements the Software APIs
-1.0.2 Universal reservation request and response shape, but the presentation
-layers do not execute that mutation until endpoint deployment and entitlement
-preflight behavior have been verified. See [PACKAGING.md](PACKAGING.md) to build
-unsigned Windows executables.
+The CLI exposes both an end-to-end Universal PLR command and staged recovery
+commands. `run` carries the authorization code in memory from Cisco reservation
+through FDM installation. `inspect` is read-only; `reserve` stops after Cisco;
+and `install` securely prompts for a previously issued authorization code:
+
+```bash
+fdm-licensing plr run --host 192.0.2.10 --smart-account example.com --virtual-account Default
+fdm-licensing plr inspect --host 192.0.2.10
+fdm-licensing plr reserve --host 192.0.2.10 --smart-account example.com --virtual-account Default
+fdm-licensing plr install --host 192.0.2.10
+```
+
+PLR return is staged across FDM and Cisco and can be run end to end with
+`fdm-licensing plr return`, or resumed with `return-inspect`,
+`return-generate`, and `return-complete`. Software APIs 1.0.2 has no v3
+reservation-creation route, so original reservations remain on v2; return
+completion uses the documented v3 product-instance removal route. Preserve the
+FDM-generated return code until Cisco confirms removal.
+
+For return workflows, the application searches Cisco globally using the FTD
+serial number and derives the owning Smart and Virtual Account from the product
+instance; it does not prompt for an account when exactly one match exists.
+General CLI account selection accepts either the displayed number or an exact
+account name/domain/ID. GUI account dialogs filter displayed matches 500 ms
+after the operator stops typing.
+
+Add `--unattended` to a `plr` command to bypass licensing mutation yes/no
+confirmations after inputs have been validated. Each skipped confirmation is
+replaced by a present-tense notification describing the operation. Missing
+values are securely prompted when a terminal is available and fail clearly in
+non-interactive execution. Secrets and handoff codes remain unavailable as
+command-line arguments. Unattended mode requires an existing trusted FDM
+certificate bundle and will never bootstrap or replace trust material.
+
+Each CLI or GUI workflow reuses one authenticated FDM session and one Cisco
+OAuth/licensing HTTP session until the workflow completes. Smart-account lists
+and each selected account's Virtual Account list are cached only in memory and
+cleared on close; no account metadata persists between executions. Independent
+read-only reservation inventory and product-instance preflight requests run
+concurrently.
+
+The system-information response read during FDM compatibility validation is
+also reused for device serial/model lookup, removing a duplicate API call.
+Persistent account caching is intentionally avoided because its small CLI
+benefit does not justify stale memberships or retained customer metadata.
+
+```bash
+fdm-licensing plr run --unattended --host 192.0.2.10 \
+  --smart-account example.com --virtual-account Default
+fdm-licensing plr return --unattended --host 192.0.2.10
+```
+
+If `--host`, smart-account selection, virtual-account selection, FDM password,
+or Cisco credentials are missing, an interactive CLI prompts for them. When the
+FDM trust bundle is absent, the workflow offers to fetch the presented
+certificate, displays its SHA-256 fingerprint, and continues only after the
+operator confirms out-of-band verification. The GUI validates all required
+fields and provides the same guided certificate bootstrap.
+
+When a complete FDM record exists in the OS vault, `plr` commands use it without
+prompting. An explicitly supplied host, port, or username must match the stored
+device identity before its password is used; otherwise the CLI prompts. Use
+`python key_manager.py store` to fill only missing groups or
+`python key_manager.py update FDM` to replace the record.
+
+Passwords and authorization codes are intentionally unavailable as command-line
+switches so they do not enter shell history or process listings. See
+[PACKAGING.md](PACKAGING.md) to build unsigned Windows executables.
+
+If Cisco credentials are absent, CLI and GUI workflows prompt for a Client ID
+and masked Client Secret, then offer session-only use or storage in the native
+OS credential vault. A vault access failure remains an error rather than being
+misreported as missing credentials.
 
 The reservation library performs an account-scoped, read-only product-instance
 preflight before every Universal PLR POST. An existing matching PID and serial
@@ -223,6 +292,11 @@ blocks the mutation and directs the operator to recover the prior authorization
 in Cisco License Central or contact TAC for a poisoned product instance. The
 published Software APIs contract does not provide an operation for downloading
 that existing authorization code.
+
+Reservation confirmation shows explicitly compatible license inventory rather
+than aggregate account totals. For example, an FPR-1010 reports the entitled,
+in-use, reserved, and currently available quantities for the Firepower 1000
+Threat Defense Universal License.
 
 ## Automated tests and CI
 

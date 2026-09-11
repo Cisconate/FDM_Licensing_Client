@@ -249,3 +249,16 @@ def safe_error_text(value: Any, *, limit: int = MAX_ERROR_LENGTH) -> str:
     text = repr(value) if not isinstance(value, str) else value
     cleaned = "".join(char if ord(char) >= 32 and ord(char) != 127 else "?" for char in text)
     return cleaned[:limit]
+_PLR_AUTHORIZATION_CODE = re.compile(
+    r"^(?:[A-Za-z0-9]{2,8}-){5,15}[A-Za-z0-9]{2,8}$"
+)
+
+
+def validate_plr_authorization_code(value: object) -> str:
+    """Validate documented and observed hyphenated UPLR authorization formats."""
+    code = validate_opaque_value(
+        value, name="authorization_code", maximum=16_384
+    )
+    if not _PLR_AUTHORIZATION_CODE.fullmatch(code):
+        raise ValueError("authorization_code has an unsupported format")
+    return code

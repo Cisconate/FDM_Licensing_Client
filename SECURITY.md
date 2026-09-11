@@ -19,14 +19,18 @@ bodies. Never construct protocol syntax with untrusted string interpolation.
 | Desktop GUI fields | Validated command-model factory | Use the same validators as the CLI; clear secret controls after submission |
 | Public constructors | Constructed client | Validate and normalize hosts, URLs, ports, timeouts, paths, credentials, and headers once |
 | Public request methods | API client `request` method | Enforce method/path/header policy; copy query mappings; validate and snapshot JSON |
-| Credential backend | `KeyManager` | Treat retrieved values as untrusted opaque strings; validate before return |
+| Credential backend | `KeyManager` | Validate Cisco and device-scoped FDM records before return; never apply an FDM password to a different host/port/username identity |
 | Credential diagnostics | `KeyManager` and OAuth client | Distinguish absence, invalid storage, backend access, credential rejection, transport, and provider failures without including stored values or provider descriptions |
 | Token callback | Licensing client | Validate type, presence, length, and control characters on every returned token |
 | Cisco account discovery | `CiscoPlrReservationClient` | Bound pagination and record counts; validate IDs, names, domains, and booleans before returning immutable models |
 | HTTP response | Receiving client | Validate status, redirects, JSON shape, required fields, field sizes, and lifetimes |
 | PLR handoff artifacts | `FdmPlrClient` and `CiscoPlrReservationClient` | Bound and validate request/authorization codes; never log request bodies or codes; require approved CSSM route and schema |
+| PLR return handoff | `FdmPlrClient` and `CiscoPlrReservationClient` | Keep the return code secret and resumable; never retry either mutation; require the exact preflighted product instance |
+| Staged PLR presentation | `UniversalPlrWorkflowService`, CLI, and GUI | Keep codes in memory, omit them from representations, collect secrets through masked prompts, and confirm each mutation |
 | Existing PLR product instance | `CiscoPlrReservationClient.preflight_universal_plr` | Parse only visible PID/device identity; require an exact account-scoped PID and serial match; block reservation without attempting recovery by replay |
 | FTD software version | `fdm_compatibility.detect_fdm_compatibility` | Read only after authentication; strictly parse `softwareVersion`; select an allowlisted route profile or fail before capability calls |
+| FDM certificate bootstrap | `fdm_certificate_store` and presentations | Offer bootstrap only when trust material is absent; show the SHA-256 fingerprint and require explicit out-of-band verification before continuing |
+| Pinned FDM certificate without SAN | `FDMClient` pinned-certificate adapter | Keep CA/signature validation enabled against the explicit bundle; omit hostname matching only after fingerprint-confirmed bootstrap; disabled by default |
 | Filesystem | Certificate/logging component | Resolve operator paths; require plain generated filenames; reject unsafe target types and oversized bundles |
 | Logs and exceptions | Component producing output | Remove control characters, bound length, and exclude credentials, tokens, headers, and request bodies |
 

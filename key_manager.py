@@ -10,7 +10,12 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Sequence
 
-from security_validation import MAX_CREDENTIAL_LENGTH, validate_opaque_value
+from security_validation import (
+    MAX_CREDENTIAL_LENGTH,
+    validate_host,
+    validate_opaque_value,
+    validate_port,
+)
 
 try:
     import keyring
@@ -25,6 +30,13 @@ except ImportError:  # Produce a clear error and permit dependency-free mock tes
 SERVICE_NAME = "fdm-client/cisco-support"
 CLIENT_ID_KEY = "client-id"
 CLIENT_SECRET_KEY = "client-secret"
+FDM_HOST_KEY = "fdm-host"
+FDM_PORT_KEY = "fdm-port"
+FDM_USERNAME_KEY = "fdm-username"
+FDM_PASSWORD_KEY = "fdm-password"
+FDM_KEYS = (FDM_HOST_KEY, FDM_PORT_KEY, FDM_USERNAME_KEY, FDM_PASSWORD_KEY)
+CISCO_CLIENT = "CISCO_CLIENT"
+FDM = "FDM"
 SUPPORTED_SYSTEMS = {"Darwin": "macOS", "Windows": "Windows", "Linux": "Linux"}
 INSECURE_BACKEND_MARKERS = ("fail", "null", "plaintext")
 
@@ -66,6 +78,16 @@ class CiscoClientCredentials:
 
 
 @dataclass(frozen=True, slots=True)
+class FdmCredentials:
+    """One default device-scoped FDM credential record."""
+
+    host: str
+    port: int
+    username: str
+    password: str
+
+
+@dataclass(frozen=True, slots=True)
 class CredentialStatus:
     """Non-secret diagnostic information about credential availability."""
 
@@ -77,6 +99,20 @@ class CredentialStatus:
     @property
     def complete(self) -> bool:
         return self.client_id_present and self.client_secret_present
+
+
+@dataclass(frozen=True, slots=True)
+class FdmCredentialStatus:
+    host_present: bool
+    port_present: bool
+    username_present: bool
+    password_present: bool
+
+    @property
+    def complete(self) -> bool:
+        return all(
+            (self.host_present, self.port_present, self.username_present, self.password_present)
+        )
 
 
 class KeyManager:
@@ -210,6 +246,58 @@ class KeyManager:
                 "The credential backend failed while storing credentials"
             ) from exc
 
+    def get_fdm_credentials(self) -> FdmCredentials:
+        """Return the default FDM record or fail without partial results."""
+        values = {key: self._get(key) for key in FDM_KEYS}
+        missing = [key.removeprefix("fdm-") for key, value in values.items() if not value]
+        if missing:
+            raise CredentialsNotFoundError(
+                f"FDM {', '.join(missing)} {'are' if len(missing) > 1 else 'is'} "
+                "empty or not stored; run 'key_manager.py store'"
+            )
+        try:
+            return FdmCredentials(
+                host=validate_host(values[FDM_HOST_KEY]),
+                port=validate_port(int(values[FDM_PORT_KEY])),
+                username=validate_opaque_value(
+                    values[FDM_USERNAME_KEY], name="stored FDM username",
+                    maximum=MAX_CREDENTIAL_LENGTH,
+                ),
+                password=validate_opaque_value(
+                    values[FDM_PASSWORD_KEY], name="stored FDM password",
+                    maximum=MAX_CREDENTIAL_LENGTH,
+                ),
+            )
+        except (TypeError, ValueError) as exc:
+            raise InvalidStoredCredentialsError(
+                "Stored FDM credentials are malformed; update the FDM credential record"
+            ) from exc
+
+    def store_fdm_credentials(
+        self, *, host: str, port: int, username: str, password: str
+    ) -> None:
+        """Atomically store one default FDM record scoped by its device identity."""
+        values = {
+            FDM_HOST_KEY: validate_host(host),
+            FDM_PORT_KEY: str(validate_port(port)),
+            FDM_USERNAME_KEY: validate_opaque_value(
+                username, name="username", maximum=MAX_CREDENTIAL_LENGTH
+            ),
+            FDM_PASSWORD_KEY: validate_opaque_value(
+                password, name="password", maximum=MAX_CREDENTIAL_LENGTH
+            ),
+        }
+        old = {key: self._get(key) for key in FDM_KEYS}
+        try:
+            for key, value in values.items():
+                self._backend.set_password(self.service_name, key, value)
+        except Exception as exc:
+            for key, value in old.items():
+                self._restore(key, value)
+            raise CredentialStorageError(
+                "The credential backend failed while storing FDM credentials"
+            ) from exc
+
     def _restore(self, username: str, value: str | None) -> None:
         try:
             if value is None:
@@ -234,6 +322,21 @@ class KeyManager:
                 "The credential backend failed while deleting credentials"
             ) from failures[0]
 
+    def delete_fdm_credentials(self) -> None:
+        """Delete the default FDM record; absent values are successful."""
+        failures = []
+        for key in FDM_KEYS:
+            try:
+                self._backend.delete_password(self.service_name, key)
+            except PasswordDeleteError:
+                continue
+            except Exception as exc:
+                failures.append(exc)
+        if failures:
+            raise CredentialStorageError(
+                "The credential backend failed while deleting FDM credentials"
+            ) from failures[0]
+
     def credential_status(self) -> CredentialStatus:
         """Return availability metadata without returning credential values."""
         return CredentialStatus(
@@ -243,19 +346,67 @@ class KeyManager:
             client_secret_present=self._get(CLIENT_SECRET_KEY) is not None,
         )
 
+    def fdm_credential_status(self) -> FdmCredentialStatus:
+        return FdmCredentialStatus(
+            host_present=self._get(FDM_HOST_KEY) is not None,
+            port_present=self._get(FDM_PORT_KEY) is not None,
+            username_present=self._get(FDM_USERNAME_KEY) is not None,
+            password_present=self._get(FDM_PASSWORD_KEY) is not None,
+        )
+
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Manage Cisco API credentials in the native OS credential store."
+        description="Manage Cisco API and device-scoped FDM credentials in the native OS credential store."
     )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status", help="Show backend and credential availability.")
-    commands.add_parser("store", help="Securely prompt for and store credentials.")
+    commands.add_parser(
+        "store", help="Prompt only for credential groups that are not complete."
+    )
+    update = commands.add_parser(
+        "update", help="Prompt for and replace one specified credential group."
+    )
+    update.add_argument(
+        "credential_group",
+        type=str.upper,
+        choices=(CISCO_CLIENT, FDM),
+        help="CISCO_CLIENT or FDM",
+    )
     delete = commands.add_parser("delete", help="Delete stored credentials.")
+    delete.add_argument(
+        "credential_group",
+        nargs="?",
+        type=str.upper,
+        choices=(CISCO_CLIENT, FDM, "ALL"),
+        default="ALL",
+    )
     delete.add_argument(
         "--yes", action="store_true", help="Delete without interactive confirmation."
     )
     return parser.parse_args(argv)
+
+
+def _prompt_cisco(manager: KeyManager) -> None:
+    client_id = input("Cisco Client ID: ").strip()
+    client_secret = getpass.getpass("Cisco Client Secret: ")
+    manager.store_cisco_credentials(client_id, client_secret)
+    print("Cisco client credentials stored securely.")
+
+
+def _prompt_fdm(manager: KeyManager) -> None:
+    host = input("FDM hostname or IP address: ").strip()
+    raw_port = input("FDM HTTPS port [443]: ").strip()
+    try:
+        port = int(raw_port) if raw_port else 443
+    except ValueError as exc:
+        raise ValueError("FDM port must be an integer") from exc
+    username = input("FDM username [admin]: ").strip() or "admin"
+    password = getpass.getpass(f"Password for {username}@{host}: ")
+    manager.store_fdm_credentials(
+        host=host, port=port, username=username, password=password
+    )
+    print("FDM credentials stored securely for the specified device.")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -264,24 +415,45 @@ def main(argv: Sequence[str] | None = None) -> int:
         manager = KeyManager()
         if args.command == "status":
             status = manager.credential_status()
+            fdm_status = manager.fdm_credential_status()
             print(f"Platform: {status.platform}")
             print(f"Backend: {status.backend}")
-            print(f"Client ID stored: {'yes' if status.client_id_present else 'no'}")
-            print(f"Client Secret stored: {'yes' if status.client_secret_present else 'no'}")
-            return 0 if status.complete else 1
+            print(f"Cisco Client ID stored: {'yes' if status.client_id_present else 'no'}")
+            print(f"Cisco Client Secret stored: {'yes' if status.client_secret_present else 'no'}")
+            print(f"FDM host stored: {'yes' if fdm_status.host_present else 'no'}")
+            print(f"FDM port stored: {'yes' if fdm_status.port_present else 'no'}")
+            print(f"FDM username stored: {'yes' if fdm_status.username_present else 'no'}")
+            print(f"FDM password stored: {'yes' if fdm_status.password_present else 'no'}")
+            return 0 if status.complete and fdm_status.complete else 1
         if args.command == "store":
-            client_id = input("Cisco Client ID: ").strip()
-            client_secret = getpass.getpass("Cisco Client Secret: ")
-            manager.store_cisco_credentials(client_id, client_secret)
-            print("Cisco client credentials stored securely.")
+            changed = False
+            if not manager.credential_status().complete:
+                _prompt_cisco(manager)
+                changed = True
+            if not manager.fdm_credential_status().complete:
+                _prompt_fdm(manager)
+                changed = True
+            if not changed:
+                print("All supported credential groups are already stored.")
+            return 0
+        if args.command == "update":
+            if args.credential_group == CISCO_CLIENT:
+                _prompt_cisco(manager)
+            else:
+                _prompt_fdm(manager)
             return 0
         if not args.yes:
-            answer = input("Delete stored Cisco client credentials? [y/N]: ")
+            answer = input(
+                f"Delete stored {args.credential_group} credentials? [y/N]: "
+            )
             if answer.strip().lower() not in {"y", "yes"}:
                 print("Deletion cancelled.")
                 return 0
-        manager.delete_cisco_credentials()
-        print("Stored Cisco client credentials deleted.")
+        if args.credential_group in {CISCO_CLIENT, "ALL"}:
+            manager.delete_cisco_credentials()
+        if args.credential_group in {FDM, "ALL"}:
+            manager.delete_fdm_credentials()
+        print(f"Stored {args.credential_group} credentials deleted.")
         return 0
     except (KeyManagerError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

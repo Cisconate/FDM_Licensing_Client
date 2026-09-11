@@ -1,7 +1,9 @@
 """Boundary-focused tests for hostile and malformed external input."""
 
 import math
+import tempfile
 import unittest
+from pathlib import Path
 
 from cisco_support_api_client import CiscoPlrError, CiscoPlrReservationClient
 from fdm_certificate_store import certificate_bundle_path
@@ -65,6 +67,30 @@ class SecurityValidationTests(unittest.TestCase):
             FDMClient(host="host", username="user", password="secret", api_version="version6", verify_certificate=False)
         with self.assertRaises(ValueError):
             FDMClient(host="host", username="user\n", password="secret", verify_certificate=False)
+        with self.assertRaises(ValueError):
+            FDMClient(
+                host="host", username="user", password="secret",
+                verify_certificate=False,
+                allow_pinned_certificate_hostname_mismatch=True,
+            )
+
+    def test_pinned_fdm_mode_keeps_ca_validation_and_omits_hostname_match(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory) / "bundle.pem"
+            bundle.write_text("placeholder", encoding="utf-8")
+            client = FDMClient(
+                host="192.0.2.1",
+                username="user",
+                password="secret",
+                ca_bundle=bundle,
+                allow_pinned_certificate_hostname_mismatch=True,
+            )
+            try:
+                adapter = client.session.adapters["https://"]
+                self.assertFalse(adapter.poolmanager.connection_pool_kw["assert_hostname"])
+                self.assertEqual(client.session.verify, str(bundle.resolve()))
+            finally:
+                client.close()
 
     def test_fdm_request_rejects_traversal_and_header_injection_before_network(self) -> None:
         client = FDMClient(host="host", username="user", password="secret", verify_certificate=False)
