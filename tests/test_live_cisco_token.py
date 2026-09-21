@@ -8,6 +8,21 @@ from cisco_support_token_client import CiscoSupportTokenClient, CiscoSupportToke
 from key_manager import CredentialsNotFoundError, KeyManager
 
 
+LIVE_TEST_ENVIRONMENT_VARIABLE = "RUN_CISCO_LIVE_TESTS"
+
+
+def _live_test_enabled() -> bool:
+    """Return whether live OAuth testing was explicitly enabled."""
+    value = os.environ.get(LIVE_TEST_ENVIRONMENT_VARIABLE)
+    if value is None:
+        return False
+    if value != "1":
+        raise RuntimeError(
+            f"{LIVE_TEST_ENVIRONMENT_VARIABLE} must be '1' when set"
+        )
+    return True
+
+
 def _load_integration_credentials() -> tuple[str, str] | None:
     """Load CI secrets first, then try the native operating-system keyring."""
     environment_configured = (
@@ -32,6 +47,12 @@ def _load_integration_credentials() -> tuple[str, str] | None:
 
 class CiscoTokenIntegrationTests(unittest.TestCase):
     def test_live_client_credentials_authentication_when_configured(self) -> None:
+        if not _live_test_enabled():
+            self.skipTest(
+                f"Cisco live authentication is disabled; set "
+                f"{LIVE_TEST_ENVIRONMENT_VARIABLE}=1 to enable it"
+            )
+
         credentials = _load_integration_credentials()
         if credentials is None:
             self.skipTest("Cisco integration credentials are not configured")
@@ -49,6 +70,42 @@ class CiscoTokenIntegrationTests(unittest.TestCase):
             self.fail(str(exc))
         finally:
             client.close()
+
+
+class LiveTestGateTests(unittest.TestCase):
+    def test_live_authentication_skips_before_loading_credentials_by_default(self) -> None:
+        test_case = CiscoTokenIntegrationTests(
+            "test_live_client_credentials_authentication_when_configured"
+        )
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "tests.test_live_cisco_token._load_integration_credentials"
+        ) as load_credentials:
+            with self.assertRaises(unittest.SkipTest):
+                test_case.test_live_client_credentials_authentication_when_configured()
+        load_credentials.assert_not_called()
+
+    def test_live_authentication_loads_credentials_when_explicitly_enabled(self) -> None:
+        test_case = CiscoTokenIntegrationTests(
+            "test_live_client_credentials_authentication_when_configured"
+        )
+        with patch.dict(
+            os.environ, {LIVE_TEST_ENVIRONMENT_VARIABLE: "1"}, clear=True
+        ), patch(
+            "tests.test_live_cisco_token._load_integration_credentials",
+            return_value=None,
+        ) as load_credentials:
+            with self.assertRaisesRegex(
+                unittest.SkipTest, "credentials are not configured"
+            ):
+                test_case.test_live_client_credentials_authentication_when_configured()
+        load_credentials.assert_called_once_with()
+
+    def test_invalid_live_authentication_flag_is_rejected(self) -> None:
+        with patch.dict(
+            os.environ, {LIVE_TEST_ENVIRONMENT_VARIABLE: "true"}, clear=True
+        ):
+            with self.assertRaisesRegex(RuntimeError, "must be '1'"):
+                _live_test_enabled()
 
 
 class IntegrationCredentialLoadingTests(unittest.TestCase):

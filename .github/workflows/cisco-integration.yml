@@ -32,6 +32,7 @@ jobs:
 
       - name: Authenticate to Cisco OAuth
         env:
+          RUN_CISCO_LIVE_TESTS: "1"
           CISCO_CLIENT_ID: ${{ secrets.CISCO_CLIENT_ID }}
           CISCO_CLIENT_SECRET: ${{ secrets.CISCO_CLIENT_SECRET }}
         run: python -m unittest -v tests.test_live_cisco_token

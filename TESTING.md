@@ -19,8 +19,8 @@ python -m unittest discover -v
 # Focused live Cisco OAuth check (exit 0 means a token was retrieved)
 python cisco_support_token_client.py --check
 
-# Focused integration-test form; skips if credentials are unavailable
-python -m unittest -v tests.test_live_cisco_token
+# Focused live integration test; explicitly opts in to network access
+RUN_CISCO_LIVE_TESTS=1 python -m unittest -v tests.test_live_cisco_token
 
 # Discover all supported FDM example switches; performs no network request
 python example.py --help
@@ -33,9 +33,11 @@ groups are complete without displaying their values. Mocked GUI tests cover
 the scalable host-selection contract: a sole host is pre-filled, multiple
 hosts are not enumerated, and typing an exact host retains its matching stored
 username and password.
-The integration test skips only when the credential entries are genuinely
-absent. Empty environment secrets, credential-backend failures, rejected
-credentials, and OAuth service failures fail with distinct bounded messages.
+The discovered suite skips live authentication unless `RUN_CISCO_LIVE_TESTS=1`
+is set. Once explicitly enabled, the integration test skips only when the
+credential entries are genuinely absent. Empty environment secrets,
+credential-backend failures, rejected credentials, and OAuth service failures
+fail with distinct bounded messages. Any value other than `1` is rejected.
 Do not treat a skipped integration test as proof that token retrieval works.
 
 Test files live in the importable `tests/` package and use the `test_*.py`
@@ -43,11 +45,13 @@ naming convention. Root-level discovery recursively finds them. Test methods sho
 name the observable behavior they protect, such as
 `test_absolute_request_path_is_rejected_before_network_call`.
 
-The suite contains deterministic mocked tests and conditional live integration
-tests. `tests/test_live_cisco_token.py` reads Cisco
-credentials from environment variables when GitHub injects them, otherwise it
-checks the native operating-system credential store. It performs one real OAuth
-request when a complete credential pair exists and skips when none exists.
+The suite contains deterministic mocked tests and an explicitly enabled live
+integration test. With `RUN_CISCO_LIVE_TESTS=1`,
+`tests/test_live_cisco_token.py` reads Cisco credentials from environment
+variables when GitHub injects them, otherwise it checks the native
+operating-system credential store. It performs one real OAuth request when a
+complete credential pair exists and skips when none exists. Without that flag,
+ordinary discovery never reads the keyring or accesses the network.
 
 ## Declaring a required test
 
@@ -104,8 +108,13 @@ target, or run an individual test from the gutter icon.
 GitHub Actions provides the shared clean-environment run.
 `.github/workflows/tests.yml` runs the discovered suite on every push and pull
 request using the oldest supported Python version and a current Python version.
-Live tests skip there when protected credentials are unavailable. Configure the
-repository's protected branch to require both matrix checks before merging.
+The workflow installs Ubuntu's `libegl1` system package, which supplies the
+`libEGL.so.1` runtime needed to import PySide6, and sets
+`QT_QPA_PLATFORM=offscreen` so GUI tests do not require a display server. Native
+system libraries do not belong in `requirements.txt`; that file continues to
+install the Python-side `PySide6-Essentials` dependency. Live authentication is
+not enabled in this workflow. Configure the repository's protected branch to
+require both matrix checks before merging.
 
 ## Live Cisco OAuth integration test
 
@@ -122,8 +131,8 @@ Create an Environment named `cisco-integration` in the repository's
 
 For sensitive organizational credentials, restrict deployment branches and add
 required reviewers to that Environment. Then open **Actions > Cisco integration
-> Run workflow**. The workflow requests a real token and checks its basic
-metadata without printing the token or credentials.
+> Run workflow**. The workflow sets `RUN_CISCO_LIVE_TESTS=1`, requests a real
+token, and checks its basic metadata without printing the token or credentials.
 
 GitHub does not prompt for secret values when a workflow starts. The secrets
 must already exist in the Environment; GitHub supplies them to the job after
@@ -135,13 +144,15 @@ are supplied, invalid credentials or Cisco OAuth failures fail the live test.
 The current test validates token generation only; a real licensing API call
 requires a documented read-only endpoint and separate integration test.
 
-On a developer workstation, `python -m unittest discover -v` checks the native
-keyring automatically. If the credentials were stored with `python
-key_manager.py store`, the live token test runs alongside the mocked tests. The
-stored FDM record can also drive authorized local device tests without a
-plaintext `.env` password. If Cisco credentials are absent, the live token test
-reports `skipped`. A GitHub-hosted runner cannot
-read the Windows Credential Manager on the computer that pushed the commit.
+On a developer workstation, ordinary `python -m unittest discover -v` skips the
+live token request before accessing the native keyring. To opt in, run
+`RUN_CISCO_LIVE_TESTS=1 python -m unittest -v tests.test_live_cisco_token`. If
+the credentials were stored with `python key_manager.py store`, the enabled
+test reads them from the native keyring. The stored FDM record can also drive
+authorized local device tests without a plaintext `.env` password. If Cisco
+credentials are absent, the enabled live token test reports `skipped`. A
+GitHub-hosted runner cannot read the Windows Credential Manager on the computer
+that pushed the commit.
 
 Every test report must distinguish these outcomes:
 

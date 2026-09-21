@@ -26,7 +26,7 @@ an optimization.
 | ID | Enhancement | Priority | Status | Trigger and completion evidence |
 | --- | --- | --- | --- | --- |
 | PERF-001 | Establish startup and workflow performance baselines | P1 | Proposed | Before broad optimization. Record GUI startup time, CLI startup time, authentication count, request latency, and peak memory on representative Windows hardware. Add repeatable measurements and explicit budgets for any metric used as an acceptance criterion. |
-| PERF-002 | Reuse authenticated clients within one licensing workflow | P1 | Proposed | Implement when the reservation workflow spans multiple FDM or Cisco operations. A workflow-scoped service should reuse its HTTP session and cached token, then close and clear them deterministically. Evidence: fewer authentication and TLS handshakes without credential leakage or changed retry behavior. |
+| PERF-002 | Reuse authenticated clients within one licensing workflow | P1 | Complete | The workflow-scoped service reuses its FDM, Cisco OAuth, and licensing sessions, caches account discovery in memory, and closes and clears all state deterministically. Focused tests verify single-client reuse and cleanup without changing retry behavior or exposing credentials. |
 | PERF-003 | Keep GUI network work off the UI thread | P1 | Proposed | Apply to each new network-backed GUI action. Use bounded background workers, marshal results back to the UI thread, prevent conflicting duplicate actions, and support safe cancellation where practical. Evidence: the window remains responsive during timeout and slow-network tests. |
 | PERF-004 | Bound large API responses and render incrementally | P1 | Proposed | Implement when list or inventory capabilities are added. Use API pagination and limits, cap retained response data, and update the GUI in batches. Evidence: stable memory use and responsive rendering with a representative large result set. |
 | PERF-005 | Add bounded concurrency for independent devices | P2 | Proposed | Consider only when a documented multi-device workflow exists. Use a bounded thread pool for network-bound operations and a separate client/session per worker. Evidence: measured throughput improvement with configured concurrency limits and isolated failures. |
@@ -40,9 +40,9 @@ an optimization.
 | ID | Enhancement | Priority | Status | Dependency or completion evidence |
 | --- | --- | --- | --- | --- |
 | FUNC-001 | Generate an FDM reservation request code | P1 | Complete | Atomic FDM mode and request-code operations are implemented with mocked boundary tests and documented API contracts. |
-| FUNC-002 | Generate a Cisco license authorization code | P1 | Blocked | Atomic exchange and response validation are implemented; a concrete default requires the entitled Cisco CSSM endpoint and payload contract. |
+| FUNC-002 | Generate a Cisco license authorization code | P1 | Complete | The documented Cisco reservation endpoint and Universal payload are implemented with atomic exchange, strict response validation, recoverable in-memory handoff, and mocked contract tests. |
 | FUNC-003 | Install an authorization code on FDM | P1 | Complete | Atomic installation is implemented with strict UPLR code validation and mocked no-network failure tests; live mutation remains operator-controlled. |
-| FUNC-004 | Coordinate the end-to-end reservation workflow | P1 | Proposed | Depends on FUNC-001 through FUNC-003 and must expose progress and recoverable handoff artifacts without logging sensitive data. |
+| FUNC-004 | Coordinate the end-to-end reservation workflow | P1 | Complete | Shared CLI and GUI services coordinate request-code generation, account selection, preflight, reservation, authorization-code handoff, and installation while keeping sensitive artifacts out of logs. |
 | FUNC-005 | Add SLR and standard licensing capabilities | P2 | Proposed | Add each capability only after its Cisco/FDM API contract is documented and registered independently. |
 
 ## Security and reliability enhancements
@@ -58,7 +58,7 @@ an optimization.
 
 | ID | Enhancement | Priority | Status | Dependency or completion evidence |
 | --- | --- | --- | --- | --- |
-| UX-001 | Present the reservation workflow as guided GUI steps | P1 | Proposed | Depends on FUNC-001 through FUNC-004. Show prerequisites, progress, validation errors, and safe retry choices at each boundary. |
+| UX-001 | Present the reservation workflow as guided GUI steps | P1 | Complete | The GUI presents staged prerequisites and operations with progress, bounded validation errors, explicit mutation confirmations, certificate recovery, and recoverable authorization-code handoff. |
 | UX-002 | Add accessible status and error presentation | P2 | Proposed | Verify keyboard navigation, focus behavior, readable progress states, and actionable bounded errors on Windows. |
 
 ## Packaging and release enhancements
