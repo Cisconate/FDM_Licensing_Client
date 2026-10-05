@@ -43,6 +43,7 @@ from fdm_certificate_store import certificate_bundle_path
 from key_manager import CiscoClientCredentials, CredentialsNotFoundError, KeyManager
 from fdm_licensing.plr_workflow import (
     FdmPlrState,
+    UnsupportedPlrDeviceError,
     UniversalPlrWorkflowService,
 )
 from fdm_licensing.services import (
@@ -279,6 +280,8 @@ class WorkflowPage(CapabilityPage):
         self.destroyed.connect(lambda _object=None: self._workflow.close())
         self._command = None
         self._request_code = None
+        self._performance_tier = None
+        self._performance_tier_present = False
         self._selection = None
         self._account_action = "reserve"
         self._code_mode = "authorization"
@@ -677,6 +680,10 @@ class WorkflowPage(CapabilityPage):
         except ValueError as exc:
             self._show_error(str(exc))
             return
+        self._request_code = None
+        self._performance_tier = None
+        self._performance_tier_present = False
+        self._update_workflow_controls()
         bundle = certificate_bundle_path(command.certificate_store_dir)
         if not bundle.is_file():
             answer = QMessageBox.question(
@@ -765,6 +772,8 @@ class WorkflowPage(CapabilityPage):
 
     def _inspection_done(self, button: QPushButton, inspection) -> None:
         button.setEnabled(True)
+        self._performance_tier = inspection.performance_tier
+        self._performance_tier_present = inspection.performance_tier_present
         if inspection.state is FdmPlrState.REQUEST_CODE_AVAILABLE:
             self._request_code = inspection.request_codes[0].code
         self._status.setText(f"FDM Universal PLR state: {inspection.state.value}.")
@@ -802,6 +811,8 @@ class WorkflowPage(CapabilityPage):
             self._show_error("FDM did not return a Universal PLR request code")
             button.setEnabled(True)
             return
+        self._performance_tier = inspection.performance_tier
+        self._performance_tier_present = inspection.performance_tier_present
         self._status.setText(
             "Universal PLR request code is ready. Select an account and reserve."
         )
@@ -816,6 +827,11 @@ class WorkflowPage(CapabilityPage):
             return
         if self._request_code is None:
             self._show_error("Generate a request code first")
+            return
+        try:
+            self._workflow.ensure_request_code_supported(self._request_code)
+        except (UnsupportedPlrDeviceError, ValueError) as exc:
+            self._show_error(str(exc))
             return
         try:
             credentials = _prompt_cisco_credentials(self)
@@ -862,6 +878,8 @@ class WorkflowPage(CapabilityPage):
 
     def _configured(self, button: QPushButton, inspection) -> None:
         self._request_code = inspection.request_codes[0].code
+        self._performance_tier = inspection.performance_tier
+        self._performance_tier_present = inspection.performance_tier_present
         button.setEnabled(True)
         self._start_reservation(button)
 
@@ -1012,7 +1030,9 @@ class WorkflowPage(CapabilityPage):
             return
         answer = QMessageBox.question(
             self, "Reserve Universal PLR",
-            self._reservation_inventory_message(summary, preflight.identity.product_id),
+            self._reservation_inventory_message(
+                summary, preflight.identity.product_id
+            ),
         )
         if answer != QMessageBox.StandardButton.Yes:
             button.setEnabled(True)
@@ -1025,7 +1045,12 @@ class WorkflowPage(CapabilityPage):
         )
 
     def _reservation_inventory_message(self, summary, product_id: str) -> str:
-        compatible = self._workflow.compatible_licenses(product_id, summary)
+        compatible = self._workflow.compatible_licenses(
+            product_id,
+            summary,
+            performance_tier=self._performance_tier,
+            performance_tier_present=self._performance_tier_present,
+        )
         if not compatible:
             return (
                 f"No explicit license-summary mapping is defined for {product_id}. "

@@ -63,7 +63,25 @@ class FdmPlrClient:
     def list_smart_agent_connections(self) -> tuple[Mapping[str, Any], ...]:
         """Return current Smart Agent connection objects without changing state."""
         data = self._fdm.get_json(self._profile.smart_agent_connections_path)
-        return self._validated_items(data, operation="Smart Agent connection list")
+        items = self._validated_items(
+            data, operation="Smart Agent connection list"
+        )
+        validated: list[Mapping[str, Any]] = []
+        for item in items:
+            connection = dict(item)
+            if "performanceTier" in connection:
+                tier = connection["performanceTier"]
+                if tier is not None:
+                    try:
+                        connection["performanceTier"] = validate_opaque_value(
+                            tier, name="performanceTier", maximum=256
+                        )
+                    except ValueError as exc:
+                        raise FdmPlrError(
+                            "Smart Agent connection contains an invalid performance tier"
+                        ) from exc
+            validated.append(connection)
+        return tuple(validated)
 
     def get_return_identity(self, *, allow_pending: bool = False) -> FdmPlrReturnIdentity:
         """Validate installed UPLR state and return stable device identity."""

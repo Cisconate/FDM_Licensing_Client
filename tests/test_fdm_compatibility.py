@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 from fdm_client import FDMClient, FDMError
 from fdm_compatibility import (
+    FTD_10_0_PROFILE,
     FTD_7_6_PROFILE,
     FdmCompatibilityError,
     detect_fdm_compatibility,
@@ -26,11 +27,24 @@ class FdmCompatibilityTests(unittest.TestCase):
         self.assertEqual(compatibility.profile, FTD_7_6_PROFILE)
         client.get_json.assert_called_once_with("operational/systeminfo/default")
 
-    def test_rejects_unknown_release_with_actionable_message(self) -> None:
+    def test_detects_supported_10_0_profile(self) -> None:
         client = Mock()
-        client.get_json.return_value = {"softwareVersion": "8.0.0-1"}
-        with self.assertRaisesRegex(FdmCompatibilityError, "supported releases: 7.6.x"):
-            detect_fdm_compatibility(client)
+        client.get_json.return_value = {"softwareVersion": "10.0.0-140"}
+        compatibility = detect_fdm_compatibility(client)
+        self.assertEqual(compatibility.profile, FTD_10_0_PROFILE)
+        self.assertEqual(compatibility.software_version.patch, 0)
+        self.assertEqual(compatibility.software_version.build, 140)
+        client.get_json.assert_called_once_with("operational/systeminfo/default")
+
+    def test_rejects_unknown_release_with_actionable_message(self) -> None:
+        for value in ("8.0.0-1", "10.1.0-1"):
+            with self.subTest(value=value):
+                client = Mock()
+                client.get_json.return_value = {"softwareVersion": value}
+                with self.assertRaisesRegex(
+                    FdmCompatibilityError, "supported releases: 7.6.x, 10.0.x"
+                ):
+                    detect_fdm_compatibility(client)
 
     def test_rejects_malformed_or_missing_version(self) -> None:
         for value in (None, "7.6", "7.6.2\nspoof"):

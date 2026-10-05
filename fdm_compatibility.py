@@ -57,7 +57,19 @@ FTD_7_6_PROFILE = FdmApiProfile(
     install_plr_code_path="license/action/installplrcode",
     cancel_plr_reservation_path="license/action/cancelreservation",
 )
-SUPPORTED_FDM_PROFILES: tuple[FdmApiProfile, ...] = (FTD_7_6_PROFILE,)
+FTD_10_0_PROFILE = FdmApiProfile(
+    name="FTD 10.0",
+    major=10,
+    minor=0,
+    smart_agent_connections_path="license/smartagentconnections",
+    plr_request_codes_path="license/operational/plrrequestcode",
+    install_plr_code_path="license/action/installplrcode",
+    cancel_plr_reservation_path="license/action/cancelreservation",
+)
+SUPPORTED_FDM_PROFILES: tuple[FdmApiProfile, ...] = (
+    FTD_7_6_PROFILE,
+    FTD_10_0_PROFILE,
+)
 
 
 @dataclass(frozen=True, slots=True)

@@ -48,11 +48,83 @@ class FdmPlrState(str, Enum):
     AMBIGUOUS = "ambiguous"
 
 
+class UnsupportedPlrDeviceError(FdmPlrError):
+    """The device family is intentionally blocked pending verified PID evidence."""
+
+
 @dataclass(frozen=True, slots=True)
 class FdmPlrInspection:
     state: FdmPlrState
     connection_count: int
     request_codes: tuple[PlrRequestCode, ...]
+    performance_tier: str | None = None
+    performance_tier_present: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class PlrInventoryRule:
+    """One evidence-backed request PID/tier to license-summary mapping."""
+
+    family: str
+    product_pattern: str
+    performance_tier: str | None
+    tier_field_required: bool
+    sku_order: int
+    tag_marker: str | None
+    display_label: str
+    supported: bool = True
+
+
+PLR_INVENTORY_RULES = (
+    PlrInventoryRule(
+        "FPR 1200 series", r"^(?:FPR|CSF)-12\d{2}[A-Za-z0-9-]*$",
+        None, False, 1200, None, "FPR 1200 Series FTD PLR", False,
+    ),
+    PlrInventoryRule(
+        "FPR 4200 series", r"^(?:FPR|CSF)-42\d{2}[A-Za-z0-9-]*$",
+        None, False, 4200, None, "FPR 4200 Series FTD PLR", False,
+    ),
+    PlrInventoryRule(
+        "FPR 1000 series", r"^FPR-1\d{3}$", None, False, 1000,
+        ".FPR1K-TD-ULR,", "Cisco Firepower 1000 Threat Defense Universal License",
+    ),
+    PlrInventoryRule(
+        "CSF 200 series", r"^CSF-2\d{2}$", None, False, 200,
+        ".CSF_200_TD_PLR,", "CSF200 Series FTD PLR",
+    ),
+    PlrInventoryRule(
+        "FTDv", r"^NGFWv$", "FTDv5", True, 5,
+        ".FPRTD-100M-ULR,", "FTDv 100 Mbps Universal License",
+    ),
+    PlrInventoryRule(
+        "FTDv", r"^NGFWv$", "FTDv10", True, 10,
+        ".FPRTD-1G-ULR,", "FTDv 1 Gbps Universal License",
+    ),
+    PlrInventoryRule(
+        "FTDv", r"^NGFWv$", "FTDv20", True, 20,
+        ".FPRTD-3G-ULR,", "FTDv 3 Gbps Universal License",
+    ),
+    PlrInventoryRule(
+        "FTDv", r"^NGFWv$", "FTDv30", True, 30,
+        ".FPRTD-5G-ULR,", "FTDv 5 Gbps Universal License",
+    ),
+    PlrInventoryRule(
+        "FTDv", r"^NGFWv$", "FTDv50", True, 50,
+        ".FPRTD-10G-ULR,", "FTDv 10 Gbps Universal License",
+    ),
+    PlrInventoryRule(
+        "FTDv", r"^NGFWv$", "FTDv100", True, 100,
+        ".FPRTD-16G-ULR,", "FTDv 16 Gbps Universal License",
+    ),
+    PlrInventoryRule(
+        "FTDv", r"^NGFWv$", "FTDvU", True, 1000,
+        ".FPRV-TD-ULR,", "Cisco Firepower Virtual Threat Defense Universal License",
+    ),
+    PlrInventoryRule(
+        "FTDv Variable", r"^NGFWv$", None, True, 1001,
+        ".FPRV-TD-ULR,", "Cisco Firepower Virtual Threat Defense Universal License",
+    ),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +194,16 @@ class UniversalPlrWorkflowService:
     def start_reuse(self) -> None:
         """Keep lazily opened transports alive until ``close`` is called."""
         self._reuse_sessions = True
+
+    def set_cisco_credentials(self, credentials: CiscoClientCredentials) -> None:
+        """Supply validated credentials before the Cisco transport is opened."""
+        if not isinstance(credentials, CiscoClientCredentials):
+            raise TypeError("credentials must be CiscoClientCredentials")
+        if self._cached_licensing is not None or self._cached_tokens is not None:
+            raise FdmPlrError(
+                "Cisco credentials cannot change after the workflow opens a Cisco session"
+            )
+        self._credentials = credentials
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         self.close()
@@ -261,7 +343,25 @@ class UniversalPlrWorkflowService:
             state = FdmPlrState.REQUEST_CODE_AVAILABLE
         else:
             state = FdmPlrState.UNIVERSAL_CONFIGURED
-        return FdmPlrInspection(state, len(connections), codes)
+        performance_tier: str | None = None
+        performance_tier_present = False
+        if len(connections) == 1:
+            connection = connections[0]
+            performance_tier_present = "performanceTier" in connection
+            performance_tier = connection.get("performanceTier")
+            if performance_tier is not None and not isinstance(
+                performance_tier, str
+            ):
+                raise FdmPlrError(
+                    "Smart Agent connection contains an invalid performance tier"
+                )
+        return FdmPlrInspection(
+            state,
+            len(connections),
+            codes,
+            performance_tier,
+            performance_tier_present,
+        )
 
     def configure_universal_plr(
         self, command: FdmConnectionCommand
@@ -344,20 +444,57 @@ class UniversalPlrWorkflowService:
 
     @staticmethod
     def compatible_licenses(
-        product_id: str, summary: LicenseSummary
+        product_id: str,
+        summary: LicenseSummary,
+        *,
+        performance_tier: str | None = None,
+        performance_tier_present: bool = False,
     ) -> tuple[Any, ...]:
-        """Return only explicitly mapped Universal PLR licenses for a device PID."""
-        rules = (
-            (r"^FPR-1\d{3}$", ".FPR1K-TD-ULR,"),
-            (r"^CSF-2\d{2}$", ".CSF_200_TD_PLR,"),
+        """Return evidence-backed inventory for a PID and optional FTDv tier."""
+        rule = UniversalPlrWorkflowService.inventory_rule(
+            product_id,
+            performance_tier=performance_tier,
+            performance_tier_present=performance_tier_present,
         )
-        marker = next(
-            (tag for pattern, tag in rules if re.fullmatch(pattern, product_id)),
-            None,
-        )
-        if marker is None:
+        if rule is None or rule.tag_marker is None:
             return ()
-        return tuple(item for item in summary.items if marker in item.tag)
+        return tuple(
+            item for item in summary.items if rule.tag_marker in item.tag
+        )
+
+    @staticmethod
+    def inventory_rule(
+        product_id: str,
+        *,
+        performance_tier: str | None = None,
+        performance_tier_present: bool = False,
+    ) -> PlrInventoryRule | None:
+        """Resolve one registry rule, blocking deliberately unsupported families."""
+        for rule in PLR_INVENTORY_RULES:
+            if not re.fullmatch(rule.product_pattern, product_id):
+                continue
+            if not rule.supported:
+                raise UnsupportedPlrDeviceError(
+                    f"{rule.family} Universal PLR is currently unsupported; "
+                    "its FDM request-code PID must be verified before this "
+                    "workflow can continue"
+                )
+            if rule.tier_field_required and (
+                not performance_tier_present
+                or rule.performance_tier != performance_tier
+            ):
+                continue
+            return rule
+        return None
+
+    @staticmethod
+    def ensure_request_code_supported(reservation_code: str) -> str:
+        """Block stubbed families before account lookup or reservation preflight."""
+        identity = CiscoPlrReservationClient.reservation_request_identity(
+            reservation_code
+        )
+        UniversalPlrWorkflowService.inventory_rule(identity.product_id)
+        return identity.product_id
 
     def preflight(
         self, selection: AccountSelection, reservation_code: str

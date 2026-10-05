@@ -366,7 +366,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             credentials = (
                 _cisco_credentials(unattended=args.unattended)
                 if args.plr_command in {
-                    "run", "reserve", "return-generate", "return-complete", "return"
+                    "return-generate", "return-complete", "return"
                 }
                 else None
             )
@@ -564,6 +564,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         return 0
                     inspection = workflow.configure_universal_plr(command)
                 request_code = inspection.request_codes[0].code
+                workflow.ensure_request_code_supported(request_code)
+                workflow.set_cisco_credentials(
+                    _cisco_credentials(unattended=args.unattended)
+                )
                 smart = _select_account(
                     workflow.list_smart_accounts(), args.smart_account,
                     label="smart account",
@@ -587,7 +591,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "License Central, or contact TAC for a poisoned product instance."
                     )
                 compatible = workflow.compatible_licenses(
-                    preflight.identity.product_id, summary
+                    preflight.identity.product_id,
+                    summary,
+                    performance_tier=inspection.performance_tier,
+                    performance_tier_present=inspection.performance_tier_present,
                 )
                 if compatible:
                     print("Compatible Universal PLR license inventory:")

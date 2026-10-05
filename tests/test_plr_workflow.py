@@ -74,6 +74,25 @@ class FdmPlrClientTests(unittest.TestCase):
         with self.assertRaises(FdmPlrError):
             self.client.list_plr_request_codes()
 
+    def test_smart_agent_performance_tier_is_validated_at_response_boundary(self) -> None:
+        self.fdm.get_json.return_value = {
+            "items": [
+                {"connectionType": "UNIVERSAL_PLR", "performanceTier": "FTDv50"},
+                {"connectionType": "UNIVERSAL_PLR", "performanceTier": None},
+            ]
+        }
+        connections = self.client.list_smart_agent_connections()
+        self.assertEqual(connections[0]["performanceTier"], "FTDv50")
+        self.assertIsNone(connections[1]["performanceTier"])
+
+        self.fdm.get_json.return_value = {
+            "items": [
+                {"connectionType": "UNIVERSAL_PLR", "performanceTier": 50}
+            ]
+        }
+        with self.assertRaisesRegex(FdmPlrError, "invalid performance tier"):
+            self.client.list_smart_agent_connections()
+
     def test_install_authorization_code_is_one_atomic_post(self) -> None:
         response = Mock()
         response.json.return_value = {"type": "PLRAuthorizationCode"}

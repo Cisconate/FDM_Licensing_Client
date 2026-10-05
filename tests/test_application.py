@@ -5,7 +5,7 @@ import os
 import threading
 import unittest
 from threading import Barrier
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -17,7 +17,7 @@ from cisco_support_api_client import (
     SmartAccount,
     VirtualAccount,
 )
-from fdm_plr_client import PlrRequestCode
+from fdm_plr_client import FdmPlrError, PlrRequestCode
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -53,6 +53,7 @@ from fdm_licensing.services import (
 from fdm_licensing.plr_workflow import (
     AuthorizationHandoff,
     FdmPlrState,
+    UnsupportedPlrDeviceError,
     UniversalPlrWorkflowService,
 )
 from fdm_licensing.gui.app import APPLICATION_STYLESHEET
@@ -94,6 +95,8 @@ class ApplicationModelTests(unittest.TestCase):
         workflow.inspect_fdm.return_value = SimpleNamespace(
             state=FdmPlrState.REQUEST_CODE_AVAILABLE,
             request_codes=(SimpleNamespace(code="DC-ZCSF-220:device-nonce-02"),),
+            performance_tier=None,
+            performance_tier_present=True,
         )
         workflow.preflight.return_value = SimpleNamespace(
             may_reserve=True,
@@ -130,9 +133,49 @@ class ApplicationModelTests(unittest.TestCase):
             result = cli_main(["plr", "run", "--host", "fdm.example.com"])
         self.assertEqual(result, 0)
         workflow.reserve.assert_called_once()
+        workflow.ensure_request_code_supported.assert_called_once_with(
+            "DC-ZCSF-220:device-nonce-02"
+        )
+        workflow.compatible_licenses.assert_called_once_with(
+            "CSF-220",
+            workflow.reservation_preview.return_value[0],
+            performance_tier=None,
+            performance_tier_present=True,
+        )
         workflow.install.assert_called_once_with(
             command, "ABC123-ABC123-ABC123-ABC123-ABC123-ABC123"
         )
+
+    def test_cli_stops_unsupported_family_before_account_discovery(self) -> None:
+        command = FdmConnectionCommand.from_untrusted(
+            host="fdm.example.com", port=443, username="admin", password="secret",
+            api_version="latest", certificate_store_dir="certificates",
+        )
+        workflow = Mock()
+        workflow.inspect_fdm.return_value = SimpleNamespace(
+            state=FdmPlrState.REQUEST_CODE_AVAILABLE,
+            request_codes=(SimpleNamespace(
+                code="DC-ZFPR-4215:serial-device-01"
+            ),),
+            performance_tier=None,
+            performance_tier_present=True,
+        )
+        workflow.ensure_request_code_supported.side_effect = (
+            UnsupportedPlrDeviceError(
+                "FPR 4200 series Universal PLR is currently unsupported"
+            )
+        )
+        with patch("fdm_licensing.cli._fdm_command", return_value=command), patch(
+            "fdm_licensing.cli._ensure_fdm_certificate"
+        ), patch(
+            "fdm_licensing.cli.UniversalPlrWorkflowService", return_value=workflow
+        ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as error:
+            result = cli_main(["plr", "run", "--host", "fdm.example.com"])
+        self.assertEqual(result, 1)
+        self.assertIn("currently unsupported", error.getvalue())
+        workflow.list_smart_accounts.assert_not_called()
+        workflow.reservation_preview.assert_not_called()
+        workflow.reserve.assert_not_called()
 
     def test_cli_missing_credentials_can_be_used_for_session_only(self) -> None:
         manager = Mock()
@@ -441,12 +484,46 @@ class ApplicationModelTests(unittest.TestCase):
         page._command = object()
         page._request_code_generated(
             page._operation_buttons["request_code"],
-            SimpleNamespace(request_codes=(SimpleNamespace(code="request-code"),)),
+            SimpleNamespace(
+                request_codes=(SimpleNamespace(code="request-code"),),
+                performance_tier="FTDv50",
+                performance_tier_present=True,
+            ),
         )
         self.assertEqual(page._request_code, "request-code")
+        self.assertEqual(page._performance_tier, "FTDv50")
+        self.assertTrue(page._performance_tier_present)
         self.assertTrue(page._operation_buttons["reserve"].isEnabled())
         self.assertIn("Select an account", page._status.text())
         page._workflow.close()
+
+    def test_gui_stops_unsupported_family_before_credential_or_account_work(self) -> None:
+        QApplication.instance() or QApplication([])
+        manager = Mock()
+        manager.fdm_credential_summary.return_value = SimpleNamespace(
+            count=0, only_host=None
+        )
+        manager.get_fdm_credentials.side_effect = CredentialsNotFoundError("missing")
+        with patch("fdm_licensing.gui.pages.KeyManager", return_value=manager):
+            page = WorkflowPage()
+        page._workflow.close()
+        page._workflow = Mock()
+        page._workflow.ensure_request_code_supported.side_effect = (
+            UnsupportedPlrDeviceError(
+                "FPR 1200 series Universal PLR is currently unsupported"
+            )
+        )
+        page._command = object()
+        page._request_code = "DC-ZFPR-1210CP:serial-device-01"
+        with patch(
+            "fdm_licensing.gui.pages._prompt_cisco_credentials"
+        ) as prompt, patch.object(page, "_show_error") as show_error:
+            page._start_reservation(page._operation_buttons["reserve"])
+        prompt.assert_not_called()
+        show_error.assert_called_once()
+        self.assertIn("currently unsupported", show_error.call_args.args[0])
+        page._workflow.list_smart_accounts.assert_not_called()
+        page._workflow.reserve.assert_not_called()
 
     def test_generate_request_code_requires_mutation_confirmation(self) -> None:
         QApplication.instance() or QApplication([])
@@ -754,13 +831,103 @@ class ApplicationServiceTests(unittest.TestCase):
             "FPR-1010", LicenseSummary("Retrieved", 0, (expected, unrelated))
         )
         self.assertEqual(result, (expected,))
+
+    def test_all_ftdv_tiers_map_to_the_confirmed_inventory_markers(self) -> None:
+        def item(marker: str) -> LicenseSummaryItem:
+            return LicenseSummaryItem(
+                tag=f"regid.example{marker}1.0_id",
+                entitled=1, future_entitled=0, in_use=0, reserved=0,
+                compliance_status="IN_COMPLIANCE", display_name=marker,
+                enforced=True, export_restricted=False, license_details=(),
+            )
+
+        mappings = {
+            "FTDv5": ".FPRTD-100M-ULR,",
+            "FTDv10": ".FPRTD-1G-ULR,",
+            "FTDv20": ".FPRTD-3G-ULR,",
+            "FTDv30": ".FPRTD-5G-ULR,",
+            "FTDv50": ".FPRTD-10G-ULR,",
+            "FTDv100": ".FPRTD-16G-ULR,",
+            "FTDvU": ".FPRV-TD-ULR,",
+            None: ".FPRV-TD-ULR,",
+        }
+        inventory = tuple(item(marker) for marker in set(mappings.values()))
+        summary = LicenseSummary("Retrieved", 0, inventory)
+        for tier, marker in mappings.items():
+            with self.subTest(tier=tier):
+                result = UniversalPlrWorkflowService.compatible_licenses(
+                    "NGFWv", summary,
+                    performance_tier=tier,
+                    performance_tier_present=True,
+                )
+                self.assertEqual(result, (next(
+                    value for value in inventory if marker in value.tag
+                ),))
+
+    def test_missing_or_unknown_ftdv_tier_is_informationally_unmapped(self) -> None:
+        summary = LicenseSummary("Retrieved", 0, ())
+        self.assertEqual(
+            UniversalPlrWorkflowService.compatible_licenses("NGFWv", summary),
+            (),
+        )
+        self.assertEqual(
+            UniversalPlrWorkflowService.compatible_licenses(
+                "NGFWv", summary,
+                performance_tier="FTDvUnknown",
+                performance_tier_present=True,
+            ),
+            (),
+        )
+
+    def test_physical_mapping_ignores_virtual_performance_tier(self) -> None:
+        expected = LicenseSummaryItem(
+            tag="regid.example.com.cisco.FPR1K-TD-ULR,1.0_id",
+            entitled=1, future_entitled=0, in_use=1, reserved=0,
+            compliance_status="IN_COMPLIANCE", display_name="FPR 1000",
+            enforced=True, export_restricted=False, license_details=(),
+        )
+        result = UniversalPlrWorkflowService.compatible_licenses(
+            "FPR-1010", LicenseSummary("Retrieved", 0, (expected,)),
+            performance_tier="FTDv50", performance_tier_present=True,
+        )
+        self.assertEqual(result, (expected,))
+
+    def test_unverified_1200_and_4200_pids_are_currently_unsupported(self) -> None:
+        for code in (
+            "DC-ZFPR-1210CP:serial-device-01",
+            "DC-ZCSF-1210CP:serial-device-01",
+            "DC-ZFPR-4215:serial-device-01",
+        ):
+            with self.subTest(code=code), self.assertRaisesRegex(
+                UnsupportedPlrDeviceError, "currently unsupported"
+            ):
+                UniversalPlrWorkflowService.ensure_request_code_supported(code)
+
+    def test_inspection_preserves_explicit_null_and_missing_tier_states(self) -> None:
+        code = (PlrRequestCode("DC-ZNGFWv:serial-device-01"),)
+        explicit_null = UniversalPlrWorkflowService._inspection(
+            ({"connectionType": "UNIVERSAL_PLR", "performanceTier": None},),
+            code,
+        )
+        missing = UniversalPlrWorkflowService._inspection(
+            ({"connectionType": "UNIVERSAL_PLR"},), code
+        )
+        self.assertTrue(explicit_null.performance_tier_present)
+        self.assertIsNone(explicit_null.performance_tier)
+        self.assertFalse(missing.performance_tier_present)
+
+        with self.assertRaisesRegex(FdmPlrError, "invalid performance tier"):
+            UniversalPlrWorkflowService._inspection(
+                ({"connectionType": "UNIVERSAL_PLR", "performanceTier": 50},),
+                code,
+            )
     def test_plr_readiness_polling_tolerates_expected_convergence_error(self) -> None:
         service = UniversalPlrWorkflowService(
             readiness_timeout=5, poll_interval=1
         )
         plr = Mock()
         plr.list_smart_agent_connections.return_value = (
-            {"connectionType": "UNIVERSAL_PLR"},
+            {"connectionType": "UNIVERSAL_PLR", "performanceTier": "FTDv30"},
         )
         code = PlrRequestCode("DC-ZCSF-220:device-nonce-02")
         plr.list_plr_request_codes.side_effect = [
@@ -772,6 +939,8 @@ class ApplicationServiceTests(unittest.TestCase):
         ) as sleep:
             result = service._wait_for_request_code(plr)
         self.assertEqual(result.request_codes, (code,))
+        self.assertEqual(result.performance_tier, "FTDv30")
+        self.assertTrue(result.performance_tier_present)
         sleep.assert_called_once_with(1)
 
     def test_plr_inspection_classifies_only_unambiguous_states(self) -> None:

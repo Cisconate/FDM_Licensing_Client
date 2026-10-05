@@ -112,9 +112,9 @@ with FDMClient(
 Using the context manager authenticates on entry and performs best-effort token
 revocation and session cleanup on exit. Immediately after authentication it
 reads `operational/systeminfo/default`, validates the detected FTD software
-release, and selects the matching API profile. The current supported profile is
-FTD `7.6.x`; unsupported or malformed versions fail before a capability request
-is sent.
+release, and selects the matching API profile. The current supported profiles
+are FTD `7.6.x` and `10.0.x`; unsupported or malformed versions fail before a
+capability request is sent.
 
 ## Cisco Support and Smart Licensing clients
 
@@ -381,7 +381,11 @@ that existing authorization code.
 Reservation confirmation shows explicitly compatible license inventory rather
 than aggregate account totals. For example, an FPR-1010 reports the entitled,
 in-use, reserved, and currently available quantities for the Firepower 1000
-Threat Defense Universal License.
+Threat Defense Universal License. FTDv inventory selection uses the Smart Agent
+`performanceTier` carried from FDM inspection; it does not infer a commercial
+tier from VM CPU or memory. FPR/CSF 1200-series and 4200-series request-code PID
+patterns currently stop before Cisco credential or reservation work with a
+"currently unsupported" error pending representative FDM request-code evidence.
 
 ## Automated tests and CI
 

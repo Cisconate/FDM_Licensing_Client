@@ -8,9 +8,9 @@ evaluation mode.
 
 Opening `FDMClient` as a context manager first obtains an API bearer token and
 then reads `GET operational/systeminfo/default`. The returned `softwareVersion`
-selects the route profile used by `FdmPlrClient`. FTD `7.6.x` is currently the
-only enabled profile; other releases stop with an unsupported-version error
-before a PLR operation is attempted.
+selects the route profile used by `FdmPlrClient`. FTD `7.6.x` and `10.0.x` are
+currently enabled profiles; other releases stop with an unsupported-version
+error before a PLR operation is attempted.
 
 ## Atomic API map
 
@@ -19,12 +19,12 @@ before a PLR operation is attempted.
 | 1 | FDM: inspect Smart Agent connection | `GET license/smartagentconnections` | `FdmPlrClient.list_smart_agent_connections()` |
 | 2a | FDM: create Universal PLR connection when none exists | `POST license/smartagentconnections` | `create_universal_plr_connection()` |
 | 2b | FDM: change an existing connection | `PUT license/smartagentconnections/{id}` with its current `version` | `update_connection_to_universal_plr()` |
-| 3 | FDM: retrieve request-code collection or one object | FTD 7.6: `GET license/operational/plrrequestcode[/{id}]` | `list_plr_request_codes()` / `get_plr_request_code()` |
+| 3 | FDM: retrieve request-code collection or one object | FTD 7.6/10.0: `GET license/operational/plrrequestcode[/{id}]` | `list_plr_request_codes()` / `get_plr_request_code()` |
 | 3a | CSSM: check for an existing product instance | `GET licensing/v2/accounts/{domain}/devices` filtered by VA and request-code identity | `CiscoPlrReservationClient.preflight_universal_plr()` |
 | 3b | CSSM: read virtual-account license inventory | `POST licensing/v2/get-summary` | `CiscoPlrReservationClient.get_license_summary()` |
 | 4 | CSSM: exchange request code for authorization code | Software APIs 1.0.2 `POST licensing/v2/account/{domain}/virtual-account/{name}/licenses/reserve` | `CiscoPlrReservationClient.reserve_universal_plr()` |
 | 5 | FDM: install authorization code | `POST license/action/installplrcode` | `FdmPlrClient.install_authorization_code()` |
-| R1 | FDM: cancel reservation and generate return code | FTD 7.6: `POST license/action/cancelreservation` | `FdmPlrClient.generate_return_code()` |
+| R1 | FDM: cancel reservation and generate return code | FTD 7.6/10.0: `POST license/action/cancelreservation` | `FdmPlrClient.generate_return_code()` |
 | R2 | CSSM: complete return | `POST licensing/v3/accounts/{domain}/devices/remove?virtualAccountName={name}` | `CiscoPlrReservationClient.return_universal_plr()` |
 | R3 | FDM: finalize unregister after Cisco acceptance | `DELETE license/smartagentconnections/{id}` | `FdmPlrClient.finalize_return()` |
 
@@ -42,7 +42,7 @@ expected precondition as a transport failure.
 
 After a confirmed create/update mutation, FDM may report the Universal PLR
 connection before its operational request code is ready. The shared workflow
-therefore polls read-only connection/request-code state for up to 60 seconds.
+therefore polls the read-only connection / request-code state for up to 60 seconds.
 It never repeats the POST/PUT. A timeout is resumable: rerunning inspection or
 `plr run` uses the existing Universal PLR connection instead of recreating it.
 
@@ -58,7 +58,7 @@ documented in Cisco's
 
 ## Library usage
 
-```python
+```text python
 from cisco_support_api_client import CiscoPlrReservationClient
 from cisco_support_token_client import CiscoSupportTokenClient
 from fdm_client import FDMClient
@@ -126,8 +126,21 @@ the observed API counts reservations within in-use quantity.
 
 Before confirmation, the presentation reports only explicitly mapped compatible
 Universal PLR inventory. FPR-1000 PIDs such as `FPR-1010` map to the
-`FPR1K-TD-ULR` tag; CSF-200 PIDs map to `CSF_200_TD_PLR`. Unknown families are
-identified as unmapped and delegated to Cisco validation rather than guessed.
+`FPR1K-TD-ULR` tag; CSF-200 PIDs map to `CSF_200_TD_PLR`. FTDv request codes use
+the generic PID `NGFWv`, so the workflow carries the sole Smart Agent
+connection's validated `performanceTier` through inspection and readiness
+polling. `FTDv5`, `FTDv10`, `FTDv20`, `FTDv30`, `FTDv50`, and `FTDv100` map to
+the observed 100 Mbps, 1 Gbps, 3 Gbps, 5 Gbps, 10 Gbps, and 16 Gbps Universal
+license tags respectively. `FTDvU` and an explicit `null` tier for `NGFWv`
+(Variable) map to `FPRV-TD-ULR`. A missing tier or unknown non-null tier remains
+informationally unmapped; physical PIDs ignore virtual-tier metadata.
+
+FPR/CSF 1200-series and FPR/CSF 4200-series request-code PID patterns are
+deliberate unsupported stubs until representative FDM request codes are
+verified. CLI and GUI stop with a bounded "currently unsupported" error before
+Cisco credential access, account discovery, reservation preflight, or mutation.
+Other unknown families are identified as unmapped and delegated to Cisco
+validation rather than guessed.
 
 Before posting, `reserve_universal_plr()` parses the visible PID and device
 identifier from the request code and searches the selected Smart/Virtual
@@ -142,7 +155,7 @@ re-download the existing code through a published API and must not replay a
 reservation as a recovery mechanism.
 
 Live testing of steps 2, 4, or 5 is not part of the routine suite because each
-can alter device or licensing state. The mocked contract tests are:
+can alter the device or licensing state. The mocked contract tests are:
 
 ```bash
 .venv/bin/python -m unittest -v tests.test_plr_workflow
@@ -162,7 +175,7 @@ the observed successful response uses `status: OK` and a single object in
 boundary parser accepts both forms, then applies the same exact serial and
 single-match validation.
 
-FTD 7.6 defines `POST license/action/cancelreservation` with a
+FTD 7.6 and 10.0 define `POST license/action/cancelreservation` with a
 `{"type":"PLRReleaseCode"}` body. Its returned `code` is a sensitive,
 resumable handoff. The application displays it until Cisco confirms removal and
 never automatically retries the FDM mutation.
