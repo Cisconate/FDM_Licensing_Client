@@ -126,7 +126,10 @@ the observed API counts reservations within in-use quantity.
 
 Before confirmation, the presentation reports only explicitly mapped compatible
 Universal PLR inventory. FPR-1000 PIDs such as `FPR-1010` map to the
-`FPR1K-TD-ULR` tag; CSF-200 PIDs map to `CSF_200_TD_PLR`. FTDv request codes use
+`FPR1K-TD-ULR` tag; CSF-200 PIDs map to `CSF_200_TD_PLR`. The observed
+`CSF-1220CX` request-code PID and the inferred `CSF-1210CE`, `CSF-1210CP`,
+`CSF-1230`, `CSF-1240`, and `CSF-1250` PIDs map to the observed
+`FPR1200_TD_ULR` tag. FTDv request codes use
 the generic PID `NGFWv`, so the workflow carries the sole Smart Agent
 connection's validated `performanceTier` through inspection and readiness
 polling. `FTDv5`, `FTDv10`, `FTDv20`, `FTDv30`, `FTDv50`, and `FTDv100` map to
@@ -135,12 +138,12 @@ license tags respectively. `FTDvU` and an explicit `null` tier for `NGFWv`
 (Variable) map to `FPRV-TD-ULR`. A missing tier or unknown non-null tier remains
 informationally unmapped; physical PIDs ignore virtual-tier metadata.
 
-FPR/CSF 1200-series and FPR/CSF 4200-series request-code PID patterns are
-deliberate unsupported stubs until representative FDM request codes are
-verified. CLI and GUI stop with a bounded "currently unsupported" error before
-Cisco credential access, account discovery, reservation preflight, or mutation.
-Other unknown families are identified as unmapped and delegated to Cisco
-validation rather than guessed.
+Only evidence-backed request-code PIDs enter the reservation workflow. Every
+other well-formed request code retains its parsed PID and device identifier for
+diagnostics, presents the same bounded unsupported-platform warning, and stops
+before Cisco credential access, account discovery, reservation preflight, or
+mutation. The warning notes that the platform may not run FDM without attempting
+to maintain specialized explanations for individual unsupported product lines.
 
 Before posting, `reserve_universal_plr()` parses the visible PID and device
 identifier from the request code and searches the selected Smart/Virtual
@@ -177,8 +180,21 @@ single-match validation.
 
 FTD 7.6 and 10.0 define `POST license/action/cancelreservation` with a
 `{"type":"PLRReleaseCode"}` body. Its returned `code` is a sensitive,
-resumable handoff. The application displays it until Cisco confirms removal and
-never automatically retries the FDM mutation.
+resumable handoff. Live FTD 7.6 testing confirmed that the same POST returns a
+valid release code while `smartagentstatuses` reports
+`PLR_DEACTIVATION_IN_PROGRESS`, without changing that state. Recovery therefore
+checks the pending state, invokes the recovery action once, validates the code,
+and verifies the pending state again. It is not a general transport retry; only
+the transport's documented single HTTP-401 refresh is permitted, and an
+ambiguous failure is never resubmitted automatically.
+
+The normal FDM API read timeout remains 30 seconds. If the initial cancellation
+POST exceeds only that read timeout, the shared service reports the ambiguity
+and polls `smartagentstatuses` without repeating the mutation. After the pending
+state is confirmed, it invokes the verified recovery operation once and resumes
+the return. TLS, authentication, HTTP, and other transport failures bypass this
+fallback. Failure to confirm pending state or recover a valid code produces a
+bounded resumable error instead of another automatic POST.
 
 Software APIs 1.0.2 defines no v3 endpoint for creating the original PLR
 reservation; reservation creation ends at v2. Return completion uses the v3
@@ -199,8 +215,9 @@ fdm-licensing plr return
 The end-to-end command separately confirms FDM cancellation, Cisco removal, and
 final FDM unregister. If Cisco completion fails or is declined, it prints the
 return code for recovery with `return-complete`. A pending FDM return is
-recognized from `PLR_DEACTIVATION_IN_PROGRESS`; recovery never repeats the
-cancellation mutation.
+recognized from `PLR_DEACTIVATION_IN_PROGRESS`; CLI and GUI report "Resuming PLR
+return with existing code", recover the code with one guarded POST instead of
+prompting for it, and continue to the separately confirmed Cisco removal.
 
 `--unattended` converts those mutation confirmations into informational output
 after all required inputs have crossed their validation boundaries. Missing

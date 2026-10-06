@@ -38,6 +38,9 @@ an optimization.
 | ID | Enhancement | Priority | Status | Dependency or completion evidence |
 | --- | --- | --- | --- | --- |
 | FUNC-005 | Add SLR and standard licensing capabilities | P2 | Proposed | Add each capability only after its Cisco/FDM API contract is documented and registered independently. |
+| FUNC-006 | Support Universal PLR inventory classification for the CSF 1200 lineup | P1 | Complete | The observed `CSF-1220CX` PID establishes the model grammar; the five sibling PIDs are explicitly allowlisted, all map to the read-only observed `FPR1200_TD_ULR` tag, and mocked tests cover every model plus the generic unsupported-device boundary. |
+| FUNC-007 | Resume an in-progress PLR return without manual code entry | P1 | Complete | Live FTD 7.6 evidence confirms one cancellation POST re-exposes a valid code while the device remains pending; CLI and GUI now guard recovery with before/after state checks and retain separate Cisco and unregister confirmations. |
+| FUNC-008 | Recover transparently from an ambiguous initial PLR cancellation read timeout | P1 | Complete | Only a classified FDM API read timeout activates the fallback; read-only status polling must confirm `PLR_DEACTIVATION_IN_PROGRESS` before one communicated recovery invocation, with all other failures and unsuccessful recovery reported normally. |
 
 ## Security and reliability enhancements
 

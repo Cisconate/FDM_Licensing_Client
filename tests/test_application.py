@@ -5,15 +5,17 @@ import os
 import threading
 import unittest
 from threading import Barrier
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 from cisco_support_api_client import (
+    CiscoPlrReservationClient,
     LicenseSummary,
     LicenseSummaryItem,
+    ProductInstance,
     SmartAccount,
     VirtualAccount,
 )
@@ -33,7 +35,12 @@ from fdm_licensing.cli import (
     _with_certificate_recovery,
     main as cli_main,
 )
-from fdm_client import FDMAuthenticationError, FDMClient, FDMRequestError
+from fdm_client import (
+    FDMAuthenticationError,
+    FDMClient,
+    FDMReadTimeoutError,
+    FDMRequestError,
+)
 from fdm_compatibility import FTD_7_6_PROFILE
 from key_manager import CredentialsNotFoundError
 from fdm_licensing.models import (
@@ -53,6 +60,7 @@ from fdm_licensing.services import (
 from fdm_licensing.plr_workflow import (
     AuthorizationHandoff,
     FdmPlrState,
+    ReturnHandoff,
     UnsupportedPlrDeviceError,
     UniversalPlrWorkflowService,
 )
@@ -146,6 +154,82 @@ class ApplicationModelTests(unittest.TestCase):
             command, "ABC123-ABC123-ABC123-ABC123-ABC123-ABC123"
         )
 
+    def test_cli_pending_return_recovers_code_without_prompting(self) -> None:
+        command = FdmConnectionCommand.from_untrusted(
+            host="fdm.example.com", port=443, username="admin", password="secret",
+            api_version="latest", certificate_store_dir="certificates",
+        )
+        instance = SimpleNamespace(product_id="FPR-1010", serial_number="ABC123")
+        selection = SimpleNamespace(
+            smart_account=SimpleNamespace(name="Example"),
+            virtual_account=SimpleNamespace(name="Default"),
+        )
+        workflow = Mock()
+        workflow.inspect_return.return_value = SimpleNamespace(
+            registration_status="PLR_DEACTIVATION_IN_PROGRESS"
+        )
+        workflow.locate_return.return_value = SimpleNamespace(
+            selection=selection, instance=instance
+        )
+        workflow.resume_return.return_value = ReturnHandoff("return-code", instance)
+        workflow.complete_return.return_value = SimpleNamespace(message="complete")
+        output = io.StringIO()
+        with patch("fdm_licensing.cli._fdm_command", return_value=command), patch(
+            "fdm_licensing.cli._ensure_fdm_certificate"
+        ), patch("fdm_licensing.cli._cisco_credentials"), patch(
+            "fdm_licensing.cli.UniversalPlrWorkflowService", return_value=workflow
+        ), patch("fdm_licensing.cli._confirmed", return_value=True), patch(
+            "fdm_licensing.cli.getpass.getpass"
+        ) as prompt, redirect_stdout(output):
+            result = cli_main(["plr", "return", "--host", "fdm.example.com"])
+
+        self.assertEqual(result, 0)
+        self.assertIn("Resuming PLR return with existing code.", output.getvalue())
+        prompt.assert_not_called()
+        workflow.generate_return.assert_not_called()
+        workflow.resume_return.assert_called_once_with(command, instance)
+        workflow.complete_return.assert_called_once_with(
+            selection, instance, "return-code"
+        )
+        workflow.finalize_return.assert_called_once_with(command)
+
+    def test_cli_return_complete_recovers_code_without_prompting(self) -> None:
+        command = FdmConnectionCommand.from_untrusted(
+            host="fdm.example.com", port=443, username="admin", password="secret",
+            api_version="latest", certificate_store_dir="certificates",
+        )
+        selection = SimpleNamespace()
+        workflow = Mock()
+        workflow.resume_return.side_effect = lambda _command, instance: ReturnHandoff(
+            "return-code", instance
+        )
+        workflow.complete_return.return_value = SimpleNamespace(message="complete")
+        output = io.StringIO()
+        with patch("fdm_licensing.cli._fdm_command", return_value=command), patch(
+            "fdm_licensing.cli._ensure_fdm_certificate"
+        ), patch("fdm_licensing.cli._cisco_credentials"), patch(
+            "fdm_licensing.cli._select_cisco_accounts", return_value=selection
+        ), patch(
+            "fdm_licensing.cli.UniversalPlrWorkflowService", return_value=workflow
+        ), patch("fdm_licensing.cli._confirmed", return_value=True), patch(
+            "fdm_licensing.cli.getpass.getpass"
+        ) as prompt, redirect_stdout(output):
+            result = cli_main([
+                "plr", "return-complete", "--host", "fdm.example.com",
+                "--product-id", "FPR-1010", "--serial-number", "ABC123",
+                "--product-tag", "product-tag",
+            ])
+
+        self.assertEqual(result, 0)
+        self.assertIn("Resuming PLR return with existing code.", output.getvalue())
+        prompt.assert_not_called()
+        recovered_instance = workflow.resume_return.call_args.args[1]
+        self.assertIsInstance(recovered_instance, ProductInstance)
+        workflow.complete_return.assert_called_once_with(
+            selection, recovered_instance, "return-code"
+        )
+        workflow.finalize_return.assert_called_once_with(command)
+
     def test_cli_stops_unsupported_family_before_account_discovery(self) -> None:
         command = FdmConnectionCommand.from_untrusted(
             host="fdm.example.com", port=443, username="admin", password="secret",
@@ -161,9 +245,7 @@ class ApplicationModelTests(unittest.TestCase):
             performance_tier_present=True,
         )
         workflow.ensure_request_code_supported.side_effect = (
-            UnsupportedPlrDeviceError(
-                "FPR 4200 series Universal PLR is currently unsupported"
-            )
+            UnsupportedPlrDeviceError("FPR-4215", "serial-device")
         )
         with patch("fdm_licensing.cli._fdm_command", return_value=command), patch(
             "fdm_licensing.cli._ensure_fdm_certificate"
@@ -172,7 +254,7 @@ class ApplicationModelTests(unittest.TestCase):
         ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as error:
             result = cli_main(["plr", "run", "--host", "fdm.example.com"])
         self.assertEqual(result, 1)
-        self.assertIn("currently unsupported", error.getvalue())
+        self.assertIn("not supported", error.getvalue())
         workflow.list_smart_accounts.assert_not_called()
         workflow.reservation_preview.assert_not_called()
         workflow.reserve.assert_not_called()
@@ -472,6 +554,63 @@ class ApplicationModelTests(unittest.TestCase):
         self.assertIn("Copy or save it now", page._status.text())
         page._workflow.close()
 
+    def test_gui_initial_timeout_result_enters_communicated_resume_path(self) -> None:
+        QApplication.instance() or QApplication([])
+        manager = Mock()
+        manager.fdm_credential_summary.return_value = SimpleNamespace(
+            count=0, only_host=None
+        )
+        manager.get_fdm_credentials.side_effect = CredentialsNotFoundError("missing")
+        with patch("fdm_licensing.gui.pages.KeyManager", return_value=manager):
+            page = WorkflowPage()
+        handoff = SimpleNamespace(resumed_after_timeout=True)
+        button = page._operation_buttons["return"]
+        with patch.object(page, "_return_resumed") as resumed:
+            page._return_generated(button, handoff)
+        self.assertEqual(
+            page._status.text(), "Resuming PLR return with existing code."
+        )
+        resumed.assert_called_once_with(button, handoff)
+        page._workflow.close()
+
+    def test_gui_pending_return_recovers_code_and_offers_cisco_continuation(self) -> None:
+        QApplication.instance() or QApplication([])
+        manager = Mock()
+        manager.fdm_credential_summary.return_value = SimpleNamespace(
+            count=0, only_host=None
+        )
+        manager.get_fdm_credentials.side_effect = CredentialsNotFoundError("missing")
+        with patch("fdm_licensing.gui.pages.KeyManager", return_value=manager):
+            page = WorkflowPage()
+        page._workflow.close()
+        page._workflow = Mock()
+        page._command = object()
+        page._selection = object()
+        instance = SimpleNamespace(product_id="FPR-1010")
+        handoff = SimpleNamespace(return_code="return-code", instance=instance)
+        page._workflow.resume_return.return_value = handoff
+        with patch.object(page, "_start_background") as background:
+            page._return_state_ready(
+                page._operation_buttons["return"], instance,
+                SimpleNamespace(
+                    registration_status="PLR_DEACTIVATION_IN_PROGRESS"
+                ),
+            )
+        self.assertEqual(
+            page._status.text(), "Resuming PLR return with existing code."
+        )
+        operation, callback = background.call_args.args[:2]
+        self.assertIs(operation(), handoff)
+        with patch(
+            "fdm_licensing.gui.pages.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ), patch.object(page, "_submit_return_code") as submit:
+            callback(handoff)
+        self.assertIs(page._return_handoff, handoff)
+        self.assertNotEqual(page._authorization.text(), "return-code")
+        submit.assert_called_once_with(page._operation_buttons["return"])
+        page._workflow.close()
+
     def test_request_code_result_unlocks_reservation_without_starting_it(self) -> None:
         QApplication.instance() or QApplication([])
         manager = Mock()
@@ -509,19 +648,17 @@ class ApplicationModelTests(unittest.TestCase):
         page._workflow.close()
         page._workflow = Mock()
         page._workflow.ensure_request_code_supported.side_effect = (
-            UnsupportedPlrDeviceError(
-                "FPR 1200 series Universal PLR is currently unsupported"
-            )
+            UnsupportedPlrDeviceError("FPR-3105", "serial-device")
         )
         page._command = object()
-        page._request_code = "DC-ZFPR-1210CP:serial-device-01"
+        page._request_code = "DC-ZFPR-3105:serial-device-01"
         with patch(
             "fdm_licensing.gui.pages._prompt_cisco_credentials"
         ) as prompt, patch.object(page, "_show_error") as show_error:
             page._start_reservation(page._operation_buttons["reserve"])
         prompt.assert_not_called()
         show_error.assert_called_once()
-        self.assertIn("currently unsupported", show_error.call_args.args[0])
+        self.assertIn("not supported", show_error.call_args.args[0])
         page._workflow.list_smart_accounts.assert_not_called()
         page._workflow.reserve.assert_not_called()
 
@@ -765,6 +902,58 @@ class ApplicationServiceTests(unittest.TestCase):
         enter.assert_called_once()
         fdm.close.assert_called_once()
 
+    def test_initial_return_timeout_confirms_pending_and_recovers_once(self) -> None:
+        service = UniversalPlrWorkflowService()
+        plr = Mock()
+        plr.generate_return_code.side_effect = FDMReadTimeoutError("timed out")
+        plr.get_return_identity.side_effect = [
+            SimpleNamespace(registration_status="UNIVERSAL_PLR"),
+            SimpleNamespace(registration_status="PLR_DEACTIVATION_IN_PROGRESS"),
+        ]
+        plr.recover_pending_return_code.return_value = SimpleNamespace(
+            code="return-code"
+        )
+        service._fdm = Mock(return_value=nullcontext(plr))
+        command = FdmConnectionCommand.from_untrusted(
+            host="fdm.example.com", port=443, username="admin", password="secret",
+            api_version="latest", certificate_store_dir="certificates",
+        )
+        instance = ProductInstance(
+            "UDI_PID:FPR-1010; UDI_SN:ABC123;", "tag", "FPR-1010", "ABC123"
+        )
+        notices = []
+
+        with patch("fdm_licensing.plr_workflow.time.sleep") as sleep:
+            handoff = service.generate_return(
+                command, instance, recovery_notice=notices.append
+            )
+
+        self.assertTrue(handoff.resumed_after_timeout)
+        self.assertEqual(handoff.return_code, "return-code")
+        self.assertEqual(len(notices), 2)
+        self.assertIn("Checking whether", notices[0])
+        self.assertIn("Resuming", notices[1])
+        plr.generate_return_code.assert_called_once_with()
+        plr.recover_pending_return_code.assert_called_once_with()
+        sleep.assert_called_once()
+
+    def test_initial_return_non_timeout_failure_does_not_enter_recovery(self) -> None:
+        service = UniversalPlrWorkflowService()
+        plr = Mock()
+        plr.generate_return_code.side_effect = FDMRequestError("HTTP 500")
+        service._fdm = Mock(return_value=nullcontext(plr))
+        command = FdmConnectionCommand.from_untrusted(
+            host="fdm.example.com", port=443, username="admin", password="secret",
+            api_version="latest", certificate_store_dir="certificates",
+        )
+        instance = ProductInstance(
+            "UDI_PID:FPR-1010; UDI_SN:ABC123;", "tag", "FPR-1010", "ABC123"
+        )
+        with self.assertRaisesRegex(FDMRequestError, "HTTP 500"):
+            service.generate_return(command, instance)
+        plr.get_return_identity.assert_not_called()
+        plr.recover_pending_return_code.assert_not_called()
+
     def test_workflow_reuses_and_closes_one_cisco_session_and_caches_accounts(self) -> None:
         tokens = Mock()
         licensing = Mock()
@@ -832,6 +1021,37 @@ class ApplicationServiceTests(unittest.TestCase):
         )
         self.assertEqual(result, (expected,))
 
+    def test_all_confirmed_and_inferred_csf_1200_pids_map_to_shared_ulr(self) -> None:
+        expected = LicenseSummaryItem(
+            tag="regid.example.com.cisco.FPR1200_TD_ULR,1.0_id",
+            entitled=6, future_entitled=0, in_use=0, reserved=0,
+            compliance_status="IN_COMPLIANCE",
+            display_name="CSF 1200 Series FTD PLR",
+            enforced=True, export_restricted=False, license_details=(),
+        )
+        unrelated = LicenseSummaryItem(
+            tag="regid.example.com.cisco.FPR_1210CP_TP,1.0_id",
+            entitled=1, future_entitled=0, in_use=0, reserved=0,
+            compliance_status="IN_COMPLIANCE", display_name="Threat Defense IPS",
+            enforced=True, export_restricted=False, license_details=(),
+        )
+        summary = LicenseSummary("Retrieved", 0, (expected, unrelated))
+        for model in ("1210CE", "1210CP", "1220CX", "1230", "1240", "1250"):
+            with self.subTest(model=model):
+                product_id = f"CSF-{model}"
+                self.assertEqual(
+                    UniversalPlrWorkflowService.ensure_request_code_supported(
+                        f"DB-Z{product_id}:deviceid-nonce-D6"
+                    ),
+                    product_id,
+                )
+                self.assertEqual(
+                    UniversalPlrWorkflowService.compatible_licenses(
+                        product_id, summary
+                    ),
+                    (expected,),
+                )
+
     def test_all_ftdv_tiers_map_to_the_confirmed_inventory_markers(self) -> None:
         def item(marker: str) -> LicenseSummaryItem:
             return LicenseSummaryItem(
@@ -892,16 +1112,23 @@ class ApplicationServiceTests(unittest.TestCase):
         )
         self.assertEqual(result, (expected,))
 
-    def test_unverified_1200_and_4200_pids_are_currently_unsupported(self) -> None:
+    def test_all_unmapped_pids_use_the_generic_unsupported_path(self) -> None:
         for code in (
             "DC-ZFPR-1210CP:serial-device-01",
-            "DC-ZCSF-1210CP:serial-device-01",
+            "DC-ZCSF-1299:serial-device-01",
             "DC-ZFPR-4215:serial-device-01",
+            "DC-ZOTHER-9000:serial-device-01",
         ):
             with self.subTest(code=code), self.assertRaisesRegex(
-                UnsupportedPlrDeviceError, "currently unsupported"
-            ):
+                UnsupportedPlrDeviceError, "not supported"
+            ) as raised:
                 UniversalPlrWorkflowService.ensure_request_code_supported(code)
+            identity = CiscoPlrReservationClient.reservation_request_identity(code)
+            self.assertEqual(raised.exception.product_id, identity.product_id)
+            self.assertEqual(
+                raised.exception.device_identifier, identity.device_identifier
+            )
+            self.assertNotIn(identity.device_identifier, str(raised.exception))
 
     def test_inspection_preserves_explicit_null_and_missing_tier_states(self) -> None:
         code = (PlrRequestCode("DC-ZNGFWv:serial-device-01"),)

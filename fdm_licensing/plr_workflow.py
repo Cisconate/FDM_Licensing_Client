@@ -27,7 +27,7 @@ from cisco_support_api_client import (
     VirtualAccount,
 )
 from cisco_support_token_client import CiscoSupportTokenClient
-from fdm_client import FDMClient, FDMRequestError
+from fdm_client import FDMClient, FDMReadTimeoutError, FDMRequestError
 from fdm_plr_client import (
     FdmPlrClient,
     FdmPlrError,
@@ -49,7 +49,17 @@ class FdmPlrState(str, Enum):
 
 
 class UnsupportedPlrDeviceError(FdmPlrError):
-    """The device family is intentionally blocked pending verified PID evidence."""
+    """A parsed device identity is not supported by the FDM workflow."""
+
+    def __init__(
+        self, product_id: str, device_identifier: str | None = None
+    ) -> None:
+        self.product_id = product_id
+        self.device_identifier = device_identifier
+        super().__init__(
+            f"Device PID {product_id!r} is not supported by this FDM licensing "
+            "workflow; the platform may not run FDM"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,17 +82,13 @@ class PlrInventoryRule:
     sku_order: int
     tag_marker: str | None
     display_label: str
-    supported: bool = True
 
 
 PLR_INVENTORY_RULES = (
     PlrInventoryRule(
-        "FPR 1200 series", r"^(?:FPR|CSF)-12\d{2}[A-Za-z0-9-]*$",
-        None, False, 1200, None, "FPR 1200 Series FTD PLR", False,
-    ),
-    PlrInventoryRule(
-        "FPR 4200 series", r"^(?:FPR|CSF)-42\d{2}[A-Za-z0-9-]*$",
-        None, False, 4200, None, "FPR 4200 Series FTD PLR", False,
+        "CSF 1200 series",
+        r"^CSF-(?:1210CE|1210CP|1220CX|1230|1240|1250)$",
+        None, False, 1200, ".FPR1200_TD_ULR,", "CSF 1200 Series FTD PLR",
     ),
     PlrInventoryRule(
         "FPR 1000 series", r"^FPR-1\d{3}$", None, False, 1000,
@@ -142,6 +148,7 @@ class ReturnHandoff:
 
     return_code: str = field(repr=False)
     instance: ProductInstance
+    resumed_after_timeout: bool = False
 
 
 class UniversalPlrWorkflowService:
@@ -469,31 +476,34 @@ class UniversalPlrWorkflowService:
         performance_tier: str | None = None,
         performance_tier_present: bool = False,
     ) -> PlrInventoryRule | None:
-        """Resolve one registry rule, blocking deliberately unsupported families."""
+        """Resolve one registry rule or reject an unsupported physical PID."""
+        product_pattern_matched = False
         for rule in PLR_INVENTORY_RULES:
             if not re.fullmatch(rule.product_pattern, product_id):
                 continue
-            if not rule.supported:
-                raise UnsupportedPlrDeviceError(
-                    f"{rule.family} Universal PLR is currently unsupported; "
-                    "its FDM request-code PID must be verified before this "
-                    "workflow can continue"
-                )
+            product_pattern_matched = True
             if rule.tier_field_required and (
                 not performance_tier_present
                 or rule.performance_tier != performance_tier
             ):
                 continue
             return rule
-        return None
+        if product_pattern_matched:
+            return None
+        raise UnsupportedPlrDeviceError(product_id)
 
     @staticmethod
     def ensure_request_code_supported(reservation_code: str) -> str:
-        """Block stubbed families before account lookup or reservation preflight."""
+        """Block unsupported PIDs before account lookup or reservation preflight."""
         identity = CiscoPlrReservationClient.reservation_request_identity(
             reservation_code
         )
-        UniversalPlrWorkflowService.inventory_rule(identity.product_id)
+        try:
+            UniversalPlrWorkflowService.inventory_rule(identity.product_id)
+        except UnsupportedPlrDeviceError as exc:
+            raise UnsupportedPlrDeviceError(
+                identity.product_id, identity.device_identifier
+            ) from exc
         return identity.product_id
 
     def preflight(
@@ -552,13 +562,60 @@ class UniversalPlrWorkflowService:
             plr.finalize_return()
 
     def generate_return(
-        self, command: FdmConnectionCommand, instance: ProductInstance
+        self,
+        command: FdmConnectionCommand,
+        instance: ProductInstance,
+        *,
+        recovery_notice: Callable[[str], None] | None = None,
     ) -> ReturnHandoff:
-        """Perform the sole FDM cancellation mutation and retain its return code."""
+        """Generate a return code or recover once after an ambiguous read timeout."""
         if not isinstance(instance, ProductInstance):
             raise ValueError("instance must be a ProductInstance")
         with self._fdm(command) as plr:
-            result: PlrReturnCode = plr.generate_return_code()
+            try:
+                result: PlrReturnCode = plr.generate_return_code()
+            except FDMReadTimeoutError as timeout_error:
+                if recovery_notice is not None:
+                    recovery_notice(
+                        "FDM did not respond before the timeout. Checking whether "
+                        "the PLR return started."
+                    )
+                deadline = time.monotonic() + self._readiness_timeout
+                while True:
+                    identity = plr.get_return_identity(allow_pending=True)
+                    if identity.registration_status == "PLR_DEACTIVATION_IN_PROGRESS":
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise FdmPlrError(
+                            "FDM cancellation timed out and a pending PLR return "
+                            "could not be confirmed; the operation outcome is unknown "
+                            "and the cancellation request was not repeated"
+                        ) from timeout_error
+                    time.sleep(min(self._poll_interval, remaining))
+                if recovery_notice is not None:
+                    recovery_notice(
+                        "FDM started the PLR return. Resuming with the existing code."
+                    )
+                try:
+                    result = plr.recover_pending_return_code()
+                except (FDMRequestError, FdmPlrError, ValueError) as recovery_error:
+                    raise FdmPlrError(
+                        "FDM started the PLR return, but its return code could not "
+                        "be recovered. No further request will be submitted "
+                        "automatically; rerun the return command to resume."
+                    ) from recovery_error
+                return ReturnHandoff(result.code, instance, True)
+        return ReturnHandoff(result.code, instance)
+
+    def resume_return(
+        self, command: FdmConnectionCommand, instance: ProductInstance
+    ) -> ReturnHandoff:
+        """Recover one pending FDM return code and retain it only in memory."""
+        if not isinstance(instance, ProductInstance):
+            raise ValueError("instance must be a ProductInstance")
+        with self._fdm(command) as plr:
+            result: PlrReturnCode = plr.recover_pending_return_code()
         return ReturnHandoff(result.code, instance)
 
     def complete_return(

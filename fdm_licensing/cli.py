@@ -18,7 +18,7 @@ from cisco_support_api_client import AccountSelection, ProductInstance
 from fdm_certificate_store import certificate_bundle_path
 from fdm_client import FDMAuthenticationError, FDMRequestError
 from key_manager import CiscoClientCredentials, CredentialsNotFoundError, KeyManager
-from .plr_workflow import FdmPlrState, ReturnHandoff, UniversalPlrWorkflowService
+from .plr_workflow import FdmPlrState, UniversalPlrWorkflowService
 from .services import (
     CiscoAccountService,
     CiscoAuthenticationService,
@@ -414,12 +414,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     product_id = instance.product_id
                     serial = instance.serial_number
                     tag = instance.product_tag
-                return_code = getpass.getpass("Universal PLR return code: ")
                 instance = ProductInstance(
                     instance_name=f"UDI_PID:{product_id}; UDI_SN:{serial};",
                     product_tag=tag,
                     product_id=product_id,
                     serial_number=serial,
+                )
+                print("Resuming PLR return with existing code.")
+                handoff = _with_certificate_recovery(
+                    command, lambda: workflow.resume_return(command, instance),
+                    unattended=args.unattended,
                 )
                 if not _confirmed(
                     f"Submit the return code for {product_id}/{serial} to Cisco v3?",
@@ -429,7 +433,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print("Cisco return cancelled.")
                     return 0
                 completed = workflow.complete_return(
-                    selection, instance, return_code
+                    selection, instance, handoff.return_code
                 )
                 if not _confirmed(
                     f"Cisco accepted the return. Complete unregister on {command.host}?",
@@ -450,6 +454,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"Cisco removed the product instance and FDM unregistered: {completed.message}",
                 )
             elif args.plr_command in {"return-generate", "return"}:
+                return_identity = workflow.inspect_return(command)
                 location = workflow.locate_return(command)
                 selection = location.selection
                 instance = location.instance
@@ -457,14 +462,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"Located {instance.product_id}/{instance.serial_number} in "
                     f"{selection.smart_account.name} / {selection.virtual_account.name}."
                 )
-                return_identity = workflow.inspect_return(command)
                 if return_identity.registration_status == "PLR_DEACTIVATION_IN_PROGRESS":
-                    if args.plr_command == "return-generate":
-                        raise RuntimeError(
-                            "FDM already generated a return code; use plr return-complete"
-                        )
-                    return_code = getpass.getpass("Existing Universal PLR return code: ")
-                    handoff = ReturnHandoff(return_code, instance)
+                    print("Resuming PLR return with existing code.")
+                    handoff = _with_certificate_recovery(
+                        command, lambda: workflow.resume_return(command, instance),
+                        unattended=args.unattended,
+                    )
                 else:
                     if not _confirmed(
                         f"Return Universal PLR from {command.host} for "
@@ -478,15 +481,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                         print("FDM return cancelled.")
                         return 0
                     handoff = _with_certificate_recovery(
-                        command, lambda: workflow.generate_return(command, instance),
+                        command,
+                        lambda: workflow.generate_return(
+                            command, instance, recovery_notice=print
+                        ),
                         unattended=args.unattended,
                     )
                 if args.plr_command == "return-generate":
-                    print("FDM generated this return code. Save it until Cisco confirms removal:")
+                    print("FDM return code is ready. Save it until Cisco confirms removal:")
                     print(handoff.return_code)
                     print("Next, run 'fdm-licensing plr return-complete'.")
                     return 0
-                print("FDM generated the return code. It will now be submitted to Cisco v3.")
+                print("FDM return code is ready. It will now be submitted to Cisco v3.")
                 if not _confirmed(
                     f"Remove {instance.product_id}/{instance.serial_number} from "
                     f"{selection.smart_account.name} / {selection.virtual_account.name}?",

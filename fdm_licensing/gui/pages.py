@@ -270,12 +270,15 @@ class _SearchableSelectionDialog(QDialog):
 
 
 class WorkflowPage(CapabilityPage):
+    recovery_notice = Signal(str)
+
     def __init__(self) -> None:
         super().__init__(
             "FTD Licensing Workflow",
             "The application is organized around the complete device-to-Cisco-to-device licensing flow.",
         )
         self._workflow = UniversalPlrWorkflowService()
+        self.recovery_notice.connect(self._status.setText)
         self._workflow.start_reuse()
         self.destroyed.connect(lambda _object=None: self._workflow.close())
         self._command = None
@@ -874,7 +877,45 @@ class WorkflowPage(CapabilityPage):
 
     def _return_location_done(self, button: QPushButton, location) -> None:
         self._selection = location.selection
-        self._return_preflight_done(button, location.instance)
+        self._start_background(
+            lambda: self._workflow.inspect_return(self._command),
+            lambda identity: self._return_state_ready(
+                button, location.instance, identity
+            ),
+            lambda message: (self._show_error(message), button.setEnabled(True)),
+            activity_title="Inspecting the FDM PLR return state",
+        )
+
+    def _return_state_ready(self, button: QPushButton, instance, identity) -> None:
+        if identity.registration_status != "PLR_DEACTIVATION_IN_PROGRESS":
+            self._return_preflight_done(button, instance)
+            return
+        self._status.setText("Resuming PLR return with existing code.")
+        self._start_background(
+            lambda: self._workflow.resume_return(self._command, instance),
+            lambda handoff: self._return_resumed(button, handoff),
+            lambda message: (self._show_error(message), button.setEnabled(True)),
+            activity_title="Recovering the existing FDM PLR return code",
+        )
+
+    def _return_resumed(self, button: QPushButton, handoff) -> None:
+        self._return_handoff = handoff
+        answer = QMessageBox.question(
+            self,
+            "Resume PLR Return",
+            "Resuming PLR return with existing code. Submit it to Cisco now?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self._authorization.setText(handoff.return_code)
+            self._authorization.setEchoMode(QLineEdit.EchoMode.Normal)
+            self._set_code_mode("return")
+            self._status.setText(
+                "PLR return resumption paused. Copy or save the recovered code, "
+                "then submit it when ready."
+            )
+            button.setEnabled(True)
+            return
+        self._submit_return_code(button)
 
     def _configured(self, button: QPushButton, inspection) -> None:
         self._request_code = inspection.request_codes[0].code
@@ -958,13 +999,21 @@ class WorkflowPage(CapabilityPage):
             button.setEnabled(True)
             return
         self._start_background(
-            lambda: self._workflow.generate_return(self._command, instance),
+            lambda: self._workflow.generate_return(
+                self._command,
+                instance,
+                recovery_notice=self.recovery_notice.emit,
+            ),
             lambda handoff: self._return_generated(button, handoff),
             lambda message: (self._show_error(message), button.setEnabled(True)),
             activity_title="Generating the FDM PLR return code",
         )
 
     def _return_generated(self, button: QPushButton, handoff) -> None:
+        if getattr(handoff, "resumed_after_timeout", False):
+            self._status.setText("Resuming PLR return with existing code.")
+            self._return_resumed(button, handoff)
+            return
         self._return_handoff = handoff
         self._authorization.setText(handoff.return_code)
         self._authorization.setEchoMode(QLineEdit.EchoMode.Normal)
@@ -980,11 +1029,10 @@ class WorkflowPage(CapabilityPage):
         if handoff is None or self._selection is None:
             self._show_error("Generate and preserve an FDM return code first")
             return
-        return_code = self._authorization.text()
         button.setEnabled(False)
         self._start_background(
             lambda: self._workflow.complete_return(
-                self._selection, handoff.instance, return_code
+                self._selection, handoff.instance, handoff.return_code
             ),
             lambda result: self._return_done(button, result),
             lambda message: (self._show_error(message), button.setEnabled(True)),

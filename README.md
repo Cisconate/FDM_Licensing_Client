@@ -270,10 +270,20 @@ Small clipboard and disk buttons beside the handoff field copy the displayed
 code through Qt's platform clipboard or save it atomically as a text file. This
 works through the same Qt interface on macOS, Linux, and Windows; POSIX file
 saves receive owner-only permissions. Status messages never repeat the code.
-Because an FDM return code may not be displayed again, generating one no longer
-opens an immediate Cisco-submission prompt. The code remains visible for copy
-or save, and **Install Authorization Code** changes to **Submit Return Code**;
-the operator explicitly selects that action when the code has been preserved.
+An initially generated FDM return code remains visible for copy or save, and
+**Install Authorization Code** changes to **Submit Return Code**; the operator
+explicitly selects that action when the code has been preserved. If FDM already
+reports `PLR_DEACTIVATION_IN_PROGRESS`, the application recovers the code with
+one state-guarded cancellation POST, reports **Resuming PLR return with existing
+code**, and offers to continue directly to Cisco. The recovered value stays
+hidden unless the operator pauses or an error requires manual recovery.
+
+If the initial cancellation POST exceeds the normal 30-second read timeout, the
+workflow does not blindly repeat it. It reports that FDM may still be processing
+the return, polls the read-only Smart Agent status, and enters the same recovery
+path once only after `PLR_DEACTIVATION_IN_PROGRESS` is confirmed. TLS,
+authentication, HTTP, and other connection failures do not trigger this
+fallback. If recovery fails, the command stops with a resumable error.
 
 Workflow controls are rendered from presentation-neutral operation metadata in
 `fdm_licensing.capabilities`; business logic and recovery behavior remain in
@@ -313,8 +323,9 @@ PLR return is staged across FDM and Cisco and can be run end to end with
 `fdm-licensing plr return`, or resumed with `return-inspect`,
 `return-generate`, and `return-complete`. Software APIs 1.0.2 has no v3
 reservation-creation route, so original reservations remain on v2; return
-completion uses the documented v3 product-instance removal route. Preserve the
-FDM-generated return code until Cisco confirms removal.
+completion uses the documented v3 product-instance removal route. A pending
+return automatically recovers its FDM code instead of prompting the operator to
+re-enter it. Preserve any displayed recovery code until Cisco confirms removal.
 
 For return workflows, the application searches Cisco globally using the FTD
 serial number and derives the owning Smart and Virtual Account from the product
@@ -383,9 +394,11 @@ than aggregate account totals. For example, an FPR-1010 reports the entitled,
 in-use, reserved, and currently available quantities for the Firepower 1000
 Threat Defense Universal License. FTDv inventory selection uses the Smart Agent
 `performanceTier` carried from FDM inspection; it does not infer a commercial
-tier from VM CPU or memory. FPR/CSF 1200-series and 4200-series request-code PID
-patterns currently stop before Cisco credential or reservation work with a
-"currently unsupported" error pending representative FDM request-code evidence.
+tier from VM CPU or memory. The CSF 1200 lineup (`1210CE`, `1210CP`, `1220CX`,
+`1230`, `1240`, and `1250`) maps to the observed `FPR1200_TD_ULR` inventory tag.
+Every other well-formed but unmapped PID stops before Cisco credential or
+reservation work with one generic unsupported-platform warning; this includes
+platforms that may not run FDM.
 
 ## Automated tests and CI
 

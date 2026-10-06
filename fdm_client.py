@@ -65,6 +65,10 @@ class FDMRequestError(FDMError):
     """An FDM REST API request failed."""
 
 
+class FDMReadTimeoutError(FDMRequestError):
+    """FDM accepted a connection but did not respond within the read timeout."""
+
+
 class _PinnedCertificateAdapter(HTTPAdapter):
     """Verify the certificate chain while omitting DNS/IP hostname matching.
 
@@ -315,6 +319,10 @@ class FDMClient:
                 timeout=self._timeout,
                 allow_redirects=False,
             )
+        except requests.exceptions.ReadTimeout as exc:
+            raise FDMAuthenticationError(
+                "FDM token request exceeded the read timeout"
+            ) from exc
         except requests.exceptions.SSLError as exc:
             raise FDMAuthenticationError(
                 "TLS validation failed. Verify the FDM certificate, hostname, "
@@ -510,6 +518,10 @@ class FDMClient:
                 timeout=self._timeout,
                 allow_redirects=False,
             )
+        except requests.exceptions.ReadTimeout as exc:
+            raise FDMReadTimeoutError(
+                "FDM API request exceeded the read timeout"
+            ) from exc
         except requests.exceptions.SSLError as exc:
             raise FDMRequestError(
                 "TLS validation failed during the FDM API request"
@@ -545,6 +557,10 @@ class FDMClient:
                     timeout=self._timeout,
                     allow_redirects=False,
                 )
+            except requests.exceptions.ReadTimeout as exc:
+                raise FDMReadTimeoutError(
+                    "FDM API retry after authentication exceeded the read timeout"
+                ) from exc
             except requests.exceptions.RequestException as exc:
                 raise FDMRequestError(
                     f"FDM API retry after authentication failed: {exc}"

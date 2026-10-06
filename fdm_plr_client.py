@@ -178,6 +178,23 @@ class FdmPlrClient:
     def generate_return_code(self) -> PlrReturnCode:
         """Cancel the installed reservation once and return its CSSM handoff code."""
         self.get_return_identity()
+        return self._request_return_code()
+
+    def recover_pending_return_code(self) -> PlrReturnCode:
+        """Recover the release code for an already-pending PLR return once."""
+        identity = self.get_return_identity(allow_pending=True)
+        if identity.registration_status != "PLR_DEACTIVATION_IN_PROGRESS":
+            raise FdmPlrError("FDM is not waiting for PLR return completion")
+        result = self._request_return_code()
+        after = self.get_return_identity(allow_pending=True)
+        if after.registration_status != "PLR_DEACTIVATION_IN_PROGRESS":
+            raise FdmPlrError(
+                "FDM did not remain in the pending PLR return state after code recovery"
+            )
+        return result
+
+    def _request_return_code(self) -> PlrReturnCode:
+        """Perform the single cancellation action and validate its sensitive code."""
         response = self._post_json(
             self._profile.cancel_plr_reservation_path,
             {"type": "PLRReleaseCode"},

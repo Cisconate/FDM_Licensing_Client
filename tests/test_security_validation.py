@@ -4,10 +4,13 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
+
+import requests
 
 from cisco_support_api_client import CiscoPlrError, CiscoPlrReservationClient
 from fdm_certificate_store import certificate_bundle_path
-from fdm_client import FDMClient
+from fdm_client import FDMClient, FDMReadTimeoutError
 from security_validation import (
     encode_json_payload,
     safe_error_text,
@@ -41,6 +44,18 @@ class SecurityValidationTests(unittest.TestCase):
         for value in ((True, 1), (math.inf, 1), (1, 301), (0, 1)):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 validate_timeout(value)
+
+    def test_fdm_read_timeout_has_a_distinct_bounded_error(self) -> None:
+        client = FDMClient(
+            host="fdm.example.com", username="admin", password="secret",
+            verify_certificate=False,
+        )
+        client._ensure_access_token = Mock(return_value="token")
+        client.session.request = Mock(side_effect=requests.exceptions.ReadTimeout())
+        with self.assertRaisesRegex(
+            FDMReadTimeoutError, "exceeded the read timeout"
+        ):
+            client.request("GET", "license/smartagentstatuses")
 
     def test_json_payload_is_strict_bounded_and_snapshotted(self) -> None:
         payload = {"enabled": True, "items": [1, 2]}

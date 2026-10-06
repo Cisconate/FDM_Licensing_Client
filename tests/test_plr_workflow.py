@@ -137,6 +137,50 @@ class FdmPlrClientTests(unittest.TestCase):
             json={"type": "PLRReleaseCode"},
         )
 
+    def test_pending_return_code_recovery_checks_state_around_one_post(self) -> None:
+        self.client.get_return_identity = Mock(side_effect=[
+            Mock(registration_status="PLR_DEACTIVATION_IN_PROGRESS"),
+            Mock(registration_status="PLR_DEACTIVATION_IN_PROGRESS"),
+        ])
+        response = Mock()
+        response.json.return_value = {
+            "type": "plrreleasecode", "code": "return-code", "id": "release-id"
+        }
+        self.fdm.request.return_value = response
+
+        result = self.client.recover_pending_return_code()
+
+        self.assertEqual(result.code, "return-code")
+        self.assertNotIn("return-code", repr(result))
+        self.assertEqual(self.client.get_return_identity.call_count, 2)
+        self.client.get_return_identity.assert_called_with(allow_pending=True)
+        self.fdm.request.assert_called_once_with(
+            "POST", "license/action/cancelreservation",
+            json={"type": "PLRReleaseCode"},
+        )
+
+    def test_return_code_recovery_rejects_non_pending_state_before_post(self) -> None:
+        self.client.get_return_identity = Mock(return_value=Mock(
+            registration_status="UNIVERSAL_PLR"
+        ))
+        with self.assertRaisesRegex(FdmPlrError, "not waiting"):
+            self.client.recover_pending_return_code()
+        self.fdm.request.assert_not_called()
+
+    def test_return_code_recovery_rejects_state_change_after_post(self) -> None:
+        self.client.get_return_identity = Mock(side_effect=[
+            Mock(registration_status="PLR_DEACTIVATION_IN_PROGRESS"),
+            Mock(registration_status="UNIVERSAL_PLR"),
+        ])
+        response = Mock()
+        response.json.return_value = {
+            "type": "plrreleasecode", "code": "return-code"
+        }
+        self.fdm.request.return_value = response
+        with self.assertRaisesRegex(FdmPlrError, "did not remain"):
+            self.client.recover_pending_return_code()
+        self.assertEqual(self.fdm.request.call_count, 1)
+
     def test_return_identity_uses_authorized_status_and_system_serial(self) -> None:
         self.fdm.get_json.return_value = {"items": [{
                 "registrationStatus": "UNIVERSAL_PLR",
