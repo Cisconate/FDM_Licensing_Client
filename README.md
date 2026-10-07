@@ -62,9 +62,10 @@ export FDM_USERNAME="admin"
 python example.py --bootstrap-certificate
 ```
 
-Certificate bootstrap makes one intentionally unverified TLS connection to
-retrieve the certificate. Review the resulting certificate out of band before
-trusting it. Subsequent API connections use the saved certificate bundle.
+Certificate bootstrap makes one intentionally unverified TLS 1.2-or-newer
+connection to retrieve the certificate. TLS 1.0 and TLS 1.1 are not permitted.
+Review the resulting certificate out of band before trusting it. Subsequent API
+connections use the saved certificate bundle.
 
 After the certificate has been bootstrapped, run:
 
@@ -483,6 +484,7 @@ the integration test is skipped.
 - Prefer prompting for passwords or injecting credentials through an approved
   secret-management mechanism.
 - Keep TLS verification enabled after initial certificate bootstrap.
+- Require TLS 1.2 or newer, including during certificate bootstrap.
 - Verify a bootstrapped certificate fingerprint through a trusted channel.
 - Keep repositories containing company code private and follow organizational
   source-control and credential-handling policies.
