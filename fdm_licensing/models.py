@@ -9,6 +9,7 @@ from security_validation import (
     MAX_CREDENTIAL_LENGTH,
     resolve_operator_path,
     validate_api_version,
+    validate_bool,
     validate_host,
     validate_opaque_value,
     validate_port,
@@ -67,6 +68,7 @@ class FdmConnectionCommand:
     password: str
     api_version: str
     certificate_store_dir: Path
+    allow_unsupported_version: bool = False
 
     @classmethod
     def from_untrusted(
@@ -78,6 +80,7 @@ class FdmConnectionCommand:
         password: str,
         api_version: str,
         certificate_store_dir: str | Path,
+        allow_unsupported_version: bool = False,
     ) -> "FdmConnectionCommand":
         return cls(
             host=validate_host(host),
@@ -91,6 +94,9 @@ class FdmConnectionCommand:
             api_version=validate_api_version(api_version),
             certificate_store_dir=resolve_operator_path(
                 certificate_store_dir, name="certificate_store_dir"
+            ),
+            allow_unsupported_version=validate_bool(
+                allow_unsupported_version, name="allow_unsupported_version"
             ),
         )
 

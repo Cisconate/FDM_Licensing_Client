@@ -5,7 +5,8 @@ from __future__ import annotations
 import sys
 from collections.abc import Sequence
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, QUrl
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -17,6 +18,12 @@ from PySide6.QtWidgets import (
 )
 
 from fdm_licensing.capabilities import capabilities_by_category
+from fdm_licensing.run_logging import (
+    default_log_directory,
+    finish_run_log,
+    log_event,
+    start_run_log,
+)
 
 from .pages import PAGE_FACTORIES
 
@@ -86,6 +93,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._pages, 1)
         self.setCentralWidget(container)
 
+        logs_action = QAction("Open Logs Folder", self)
+        logs_action.triggered.connect(self._open_logs_folder)
+        self.menuBar().addMenu("Tools").addAction(logs_action)
+
         for category, capabilities in capabilities_by_category().items():
             group = QTreeWidgetItem([category.value])
             group.setFlags(group.flags() & ~Qt.ItemFlag.ItemIsSelectable)
@@ -127,20 +138,33 @@ class MainWindow(QMainWindow):
         if page_key in self._page_indexes:
             self._pages.setCurrentIndex(self._page_indexes[page_key])
 
+    def _open_logs_folder(self) -> None:
+        log_event("gui.logs_folder_requested")
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(default_log_directory())))
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(argv) if argv is not None else list(sys.argv)
     smoke_test = "--smoke-test" in arguments
     if smoke_test:
         arguments.remove("--smoke-test")
-    app = QApplication(arguments)
-    app.setApplicationName("FDM Licensing Client")
-    app.setStyleSheet(APPLICATION_STYLESHEET)
-    window = MainWindow()
-    window.show()
-    if smoke_test:
-        QTimer.singleShot(100, app.quit)
-    return app.exec()
+    run_log = start_run_log("gui")
+    outcome = "completed"
+    try:
+        app = QApplication(arguments)
+        app.setApplicationName("FDM Licensing Client")
+        app.setStyleSheet(APPLICATION_STYLESHEET)
+        window = MainWindow()
+        window.show()
+        if smoke_test:
+            QTimer.singleShot(100, app.quit)
+        return app.exec()
+    except Exception:
+        outcome = "failed"
+        log_event("gui.failed")
+        raise
+    finally:
+        finish_run_log(run_log, outcome=outcome)
 
 
 if __name__ == "__main__":

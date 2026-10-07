@@ -83,6 +83,18 @@ class FdmPlrClient:
             validated.append(connection)
         return tuple(validated)
 
+    def get_platform_model(self) -> str:
+        """Return the validated platform model from authenticated FDM state."""
+        system = self._fdm.system_information
+        if not isinstance(system, Mapping):
+            raise FdmPlrError("FDM system information must be an object")
+        try:
+            return validate_opaque_value(
+                system["platformModel"], name="FTD platform model", maximum=256
+            )
+        except (KeyError, ValueError) as exc:
+            raise FdmPlrError("FDM returned an invalid platform model") from exc
+
     def get_return_identity(self, *, allow_pending: bool = False) -> FdmPlrReturnIdentity:
         """Validate installed UPLR state and return stable device identity."""
         statuses = self._validated_items(
@@ -119,11 +131,28 @@ class FdmPlrClient:
         except (KeyError, ValueError) as exc:
             raise FdmPlrError("FDM returned invalid device identity") from exc
 
-    def create_universal_plr_connection(self) -> Mapping[str, Any]:
+    def create_universal_plr_connection(
+        self,
+        *,
+        performance_tier: str | None = None,
+        performance_tier_present: bool = False,
+    ) -> Mapping[str, Any]:
         """Create a Smart Agent connection in Universal PLR mode."""
+        payload: dict[str, Any] = {
+            "type": "smartagentconnection",
+            "connectionType": "UNIVERSAL_PLR",
+        }
+        if performance_tier_present:
+            payload["performanceTier"] = (
+                validate_opaque_value(
+                    performance_tier, name="performance_tier", maximum=256
+                )
+                if performance_tier is not None
+                else None
+            )
         return self._post_json(
             self._profile.smart_agent_connections_path,
-            {"type": "smartagentconnection", "connectionType": "UNIVERSAL_PLR"},
+            payload,
         )
 
     def update_connection_to_universal_plr(
@@ -132,6 +161,7 @@ class FdmPlrClient:
         connection_id: str,
         version: str,
         performance_tier: str | None = None,
+        performance_tier_present: bool = False,
     ) -> Mapping[str, Any]:
         """Update one existing Smart Agent connection to Universal PLR mode."""
         connection_id = validate_opaque_value(
@@ -144,9 +174,13 @@ class FdmPlrClient:
             "type": "smartagentconnection",
             "connectionType": "UNIVERSAL_PLR",
         }
-        if performance_tier is not None:
-            payload["performanceTier"] = validate_opaque_value(
-                performance_tier, name="performance_tier", maximum=256
+        if performance_tier_present:
+            payload["performanceTier"] = (
+                validate_opaque_value(
+                    performance_tier, name="performance_tier", maximum=256
+                )
+                if performance_tier is not None
+                else None
             )
         return self._put_json(
             f"{self._profile.smart_agent_connections_path}/{connection_id}", payload
@@ -224,6 +258,11 @@ class FdmPlrClient:
 
     def finalize_return(self) -> None:
         """Delete the sole Smart Agent connection after CSSM accepts the return."""
+        connection_id = self.finalization_connection_id()
+        self.delete_smart_agent_connection(connection_id)
+
+    def finalization_connection_id(self) -> str:
+        """Validate pending return state and identify the sole connection."""
         identity = self.get_return_identity(allow_pending=True)
         if identity.registration_status != "PLR_DEACTIVATION_IN_PROGRESS":
             raise FdmPlrError("FDM is not waiting for PLR return completion")
@@ -236,6 +275,13 @@ class FdmPlrClient:
             )
         except (KeyError, ValueError) as exc:
             raise FdmPlrError("FDM returned an invalid Smart Agent connection") from exc
+        return connection_id
+
+    def delete_smart_agent_connection(self, connection_id: str) -> None:
+        """Delete one validated Smart Agent connection exactly once."""
+        connection_id = validate_opaque_value(
+            connection_id, name="Smart Agent connection id", maximum=256
+        )
         response = self._fdm.request(
             "DELETE", f"{self._profile.smart_agent_connections_path}/{connection_id}"
         )

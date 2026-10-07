@@ -18,7 +18,17 @@ from cisco_support_api_client import AccountSelection, ProductInstance
 from fdm_certificate_store import certificate_bundle_path
 from fdm_client import FDMAuthenticationError, FDMRequestError
 from key_manager import CiscoClientCredentials, CredentialsNotFoundError, KeyManager
-from .plr_workflow import FdmPlrState, UniversalPlrWorkflowService
+from .plr_workflow import (
+    FTDV_PERFORMANCE_MODES,
+    FdmPlrState,
+    UniversalPlrWorkflowService,
+)
+from .run_logging import (
+    default_log_directory,
+    finish_run_log,
+    log_event,
+    start_run_log,
+)
 from .services import (
     CiscoAccountService,
     CiscoAuthenticationService,
@@ -32,6 +42,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fdm-licensing")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("capabilities", help="List supported application capabilities")
+    logs = commands.add_parser("logs", help="Locate application run logs")
+    log_commands = logs.add_subparsers(dest="log_command", required=True)
+    log_commands.add_parser("path", help="Print the platform-specific run-log directory")
 
     credentials = commands.add_parser("credentials", help="Manage Cisco credentials")
     credential_commands = credentials.add_subparsers(dest="credential_command", required=True)
@@ -73,6 +86,13 @@ def _parser() -> argparse.ArgumentParser:
         if name == "auth-check":
             operation.add_argument("--username", default="admin")
             operation.add_argument("--api-version", default="latest")
+            operation.add_argument(
+                "--allow-unsupported-version", action="store_true",
+                help=(
+                    "test an unsupported minor release using the newest known "
+                    "same-major API profile; does not bypass major-version safety"
+                ),
+            )
 
     plr = commands.add_parser(
         "plr",
@@ -99,6 +119,13 @@ def _parser() -> argparse.ArgumentParser:
         operation.add_argument("--port", type=int)
         operation.add_argument("--username")
         operation.add_argument("--api-version", default="latest")
+        operation.add_argument(
+            "--allow-unsupported-version", action="store_true",
+            help=(
+                "test an unsupported minor release using the newest known "
+                "same-major API profile; mutation safeguards remain enabled"
+            ),
+        )
         operation.add_argument("--certificate-store-dir", default="certificates")
         operation.add_argument(
             "--unattended", action="store_true",
@@ -115,6 +142,16 @@ def _parser() -> argparse.ArgumentParser:
             operation.add_argument(
                 "--virtual-account",
                 help="exact virtual-account ID or name; prompted when omitted",
+            )
+        if name in {"run", "reserve"}:
+            operation.add_argument(
+                "--ftdv-mode",
+                choices=tuple(mode.key for mode in FTDV_PERFORMANCE_MODES),
+                help=(
+                    "FTDv performance mode: variable, 100m, 1g, 3g, 5g, "
+                    "10g, 16g, or unlimited; prompted for an unconfigured FTDv "
+                    "when input is interactive"
+                ),
             )
         if name == "return-complete":
             operation.add_argument("--product-id", help="exact device PID; prompted when omitted")
@@ -165,6 +202,9 @@ def _fdm_command(args) -> FdmConnectionCommand:
         password=password,
         api_version=args.api_version,
         certificate_store_dir=args.certificate_store_dir,
+        allow_unsupported_version=getattr(
+            args, "allow_unsupported_version", False
+        ),
     )
 
 
@@ -308,10 +348,46 @@ def _select_cisco_accounts(args, accounts):
     return AccountSelection(smart, virtual)
 
 
+def _select_ftdv_mode(supplied: str | None, *, unattended: bool) -> str:
+    if supplied is not None:
+        return supplied
+    if unattended or not sys.stdin.isatty():
+        raise ValueError(
+            "--ftdv-mode is required when configuring FTDv non-interactively"
+        )
+    for index, mode in enumerate(FTDV_PERFORMANCE_MODES, 1):
+        print(f"{index}. {mode.label}")
+    raw = input(
+        f"Select FTDv performance mode [1-{len(FTDV_PERFORMANCE_MODES)}]: "
+    ).strip()
+    try:
+        index = int(raw)
+    except ValueError as exc:
+        raise ValueError("FTDv performance mode selection must be a number") from exc
+    if not 1 <= index <= len(FTDV_PERFORMANCE_MODES):
+        raise ValueError("FTDv performance mode selection is out of range")
+    return FTDV_PERFORMANCE_MODES[index - 1].key
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    run_log = start_run_log("cli")
+    run_outcome = "completed"
+    log_event(
+        "cli.command",
+        command=args.command,
+        subcommand=getattr(args, "plr_command", None)
+        or getattr(args, "fdm_command", None)
+        or getattr(args, "credential_command", None)
+        or getattr(args, "cisco_command", None)
+        or getattr(args, "log_command", None)
+        or "none",
+    )
     active_workflow: UniversalPlrWorkflowService | None = None
     try:
+        if args.command == "logs":
+            print(default_log_directory())
+            return 0
         if args.command == "capabilities":
             for capability in CAPABILITIES:
                 print(f"{capability.id}: {capability.title} [{capability.risk.value}]")
@@ -362,6 +438,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
         elif args.command == "plr":
             command = _fdm_command(args)
+            if command.allow_unsupported_version:
+                print(
+                    "WARNING: unsupported-version override enabled; using the "
+                    "newest known same-major FDM API profile."
+                )
             _ensure_fdm_certificate(command, unattended=args.unattended)
             credentials = (
                 _cisco_credentials(unattended=args.unattended)
@@ -446,7 +527,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                     return 0
                 _with_certificate_recovery(
-                    command, lambda: workflow.finalize_return(command),
+                    command,
+                    lambda: workflow.finalize_return(
+                        command, recovery_notice=print
+                    ),
                     unattended=args.unattended,
                 )
                 result = OperationResult(
@@ -524,7 +608,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print("Cisco return completed; FDM final unregister remains pending.")
                     return 0
                 _with_certificate_recovery(
-                    command, lambda: workflow.finalize_return(command),
+                    command,
+                    lambda: workflow.finalize_return(
+                        command, recovery_notice=print
+                    ),
                     unattended=args.unattended,
                 )
                 result = OperationResult(
@@ -554,11 +641,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     command, lambda: workflow.inspect_fdm(command),
                     unattended=args.unattended,
                 )
+                selected_ftdv_mode = getattr(args, "ftdv_mode", None)
+                workflow.validate_ftdv_selection(inspection, selected_ftdv_mode)
                 if inspection.state is not FdmPlrState.REQUEST_CODE_AVAILABLE:
                     if inspection.state is FdmPlrState.AMBIGUOUS:
                         raise RuntimeError(
                             "FDM licensing state is ambiguous and cannot be changed safely"
                         )
+                    if getattr(inspection, "is_ftdv", False):
+                        selected_ftdv_mode = _select_ftdv_mode(
+                            selected_ftdv_mode, unattended=args.unattended
+                        )
+                        selected = workflow.ftdv_mode(selected_ftdv_mode)
+                        print(f"Selected FTDv performance mode: {selected.label}.")
                     if not _confirmed(
                         f"Configure Universal PLR on {command.host} to generate a request code?",
                         unattended=args.unattended,
@@ -568,7 +663,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ):
                         print("Reservation cancelled.")
                         return 0
-                    inspection = workflow.configure_universal_plr(command)
+                    inspection = workflow.configure_universal_plr(
+                        command, ftdv_mode=selected_ftdv_mode
+                    )
                 request_code = inspection.request_codes[0].code
                 workflow.ensure_request_code_supported(request_code)
                 workflow.set_cisco_credentials(
@@ -667,15 +764,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         else:
             command = _fdm_command(args)
+            if command.allow_unsupported_version:
+                print(
+                    "WARNING: unsupported-version override enabled; using the "
+                    "newest known same-major FDM API profile."
+                )
             result = FdmAuthenticationService().validate(command)
         print(f"{result.title}: {result.message}")
         return 0
     except (OSError, RuntimeError, ValueError) as exc:
+        run_outcome = "failed"
+        log_event("cli.failed", error_type=type(exc).__name__)
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     finally:
         if active_workflow is not None:
             active_workflow.close()
+        finish_run_log(run_log, outcome=run_outcome)
 
 
 if __name__ == "__main__":

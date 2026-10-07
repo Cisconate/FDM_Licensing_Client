@@ -197,9 +197,15 @@ class FdmAuthenticationService:
             password=command.password,
             api_version=command.api_version,
             certificate_store_dir=command.certificate_store_dir,
+            allow_unsupported_version=command.allow_unsupported_version,
         ) as client:
+            override = (
+                " Compatibility override used a same-major API profile."
+                if client.compatibility_override_used
+                else ""
+            )
             return OperationResult(
                 "FDM authentication",
                 f"Authentication and compatibility validation succeeded for FTD "
-                f"{client.software_version}; the session was closed.",
+                f"{client.software_version}; the session was closed.{override}",
             )

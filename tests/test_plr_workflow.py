@@ -40,6 +40,24 @@ class FdmPlrClientTests(unittest.TestCase):
             json={"type": "smartagentconnection", "connectionType": "UNIVERSAL_PLR"},
         )
 
+    def test_create_ftdv_connection_sends_fixed_or_explicit_variable_tier(self) -> None:
+        response = Mock()
+        response.json.return_value = {"id": "connection-id", "version": "1"}
+        self.fdm.request.return_value = response
+
+        self.client.create_universal_plr_connection(
+            performance_tier="FTDv20", performance_tier_present=True
+        )
+        self.assertEqual(
+            self.fdm.request.call_args.kwargs["json"]["performanceTier"], "FTDv20"
+        )
+        self.fdm.request.reset_mock()
+        self.client.create_universal_plr_connection(
+            performance_tier=None, performance_tier_present=True
+        )
+        self.assertIn("performanceTier", self.fdm.request.call_args.kwargs["json"])
+        self.assertIsNone(self.fdm.request.call_args.kwargs["json"]["performanceTier"])
+
     def test_update_universal_plr_connection_preserves_version_boundary(self) -> None:
         response = Mock()
         response.json.return_value = {"id": "connection-id", "version": "2"}
@@ -48,7 +66,6 @@ class FdmPlrClientTests(unittest.TestCase):
         self.client.update_connection_to_universal_plr(
             connection_id="connection-id", version="1"
         )
-
         self.fdm.request.assert_called_once_with(
             "PUT",
             "license/smartagentconnections/connection-id",
@@ -59,6 +76,17 @@ class FdmPlrClientTests(unittest.TestCase):
                 "connectionType": "UNIVERSAL_PLR",
             },
         )
+
+    def test_update_ftdv_connection_can_send_explicit_variable_tier(self) -> None:
+        response = Mock()
+        response.json.return_value = {"id": "connection-id", "version": "2"}
+        self.fdm.request.return_value = response
+        self.client.update_connection_to_universal_plr(
+            connection_id="connection-id", version="1",
+            performance_tier=None, performance_tier_present=True,
+        )
+        self.assertIn("performanceTier", self.fdm.request.call_args.kwargs["json"])
+        self.assertIsNone(self.fdm.request.call_args.kwargs["json"]["performanceTier"])
 
     def test_request_code_is_validated_at_response_boundary(self) -> None:
         self.fdm.get_json.return_value = {

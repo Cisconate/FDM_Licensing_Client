@@ -29,6 +29,7 @@ from fdm_licensing.capabilities import (
     get_capability,
 )
 from fdm_licensing.cli import (
+    _parser,
     _cisco_credentials,
     _confirmed,
     _select_account,
@@ -59,6 +60,7 @@ from fdm_licensing.services import (
 )
 from fdm_licensing.plr_workflow import (
     AuthorizationHandoff,
+    FTDV_PLATFORM_MODEL,
     FdmPlrState,
     ReturnHandoff,
     UnsupportedPlrDeviceError,
@@ -79,6 +81,20 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 
 class ApplicationModelTests(unittest.TestCase):
+    def test_cli_exposes_all_ftdv_performance_modes_for_run_and_reserve(self) -> None:
+        for command in ("run", "reserve"):
+            with self.subTest(command=command):
+                args = _parser().parse_args([
+                    "plr", command, "--host", "fdm.example.com",
+                    "--ftdv-mode", "16g",
+                ])
+                self.assertEqual(args.ftdv_mode, "16g")
+        with self.assertRaises(SystemExit):
+            _parser().parse_args([
+                "plr", "run", "--host", "fdm.example.com",
+                "--ftdv-mode", "20g",
+            ])
+
     def test_cli_retries_once_after_confirmed_tls_certificate_recovery(self) -> None:
         command = FdmConnectionCommand.from_untrusted(
             host="fdm.example.com", port=443, username="admin", password="secret",
@@ -191,7 +207,9 @@ class ApplicationModelTests(unittest.TestCase):
         workflow.complete_return.assert_called_once_with(
             selection, instance, "return-code"
         )
-        workflow.finalize_return.assert_called_once_with(command)
+        workflow.finalize_return.assert_called_once_with(
+            command, recovery_notice=print
+        )
 
     def test_cli_return_complete_recovers_code_without_prompting(self) -> None:
         command = FdmConnectionCommand.from_untrusted(
@@ -228,7 +246,9 @@ class ApplicationModelTests(unittest.TestCase):
         workflow.complete_return.assert_called_once_with(
             selection, recovered_instance, "return-code"
         )
-        workflow.finalize_return.assert_called_once_with(command)
+        workflow.finalize_return.assert_called_once_with(
+            command, recovery_notice=print
+        )
 
     def test_cli_stops_unsupported_family_before_account_discovery(self) -> None:
         command = FdmConnectionCommand.from_untrusted(
@@ -456,6 +476,8 @@ class ApplicationModelTests(unittest.TestCase):
         for field in (page._host, page._username, page._password):
             self.assertEqual(field.placeholderText(), "Using Keychain")
             self.assertEqual(field.property("credentialState"), "keychain")
+        self.assertFalse(page._version_override.isChecked())
+        self.assertIn("same-major", page._version_override.text())
 
     def test_workflow_user_fields_override_vault_and_clear_back_to_vault(self) -> None:
         QApplication.instance() or QApplication([])
@@ -681,6 +703,42 @@ class ApplicationModelTests(unittest.TestCase):
         self.assertIn("cancelled", page._status.text())
         page._workflow.close()
 
+    def test_gui_requires_and_passes_ftdv_performance_mode(self) -> None:
+        QApplication.instance() or QApplication([])
+        manager = Mock()
+        manager.fdm_credential_summary.return_value = SimpleNamespace(
+            count=0, only_host=None
+        )
+        manager.get_fdm_credentials.side_effect = CredentialsNotFoundError("missing")
+        with patch("fdm_licensing.gui.pages.KeyManager", return_value=manager):
+            page = WorkflowPage()
+        page._command = object()
+        page._inspection_done(
+            page._operation_buttons["inspect"],
+            SimpleNamespace(
+                state=FdmPlrState.NOT_CONFIGURED,
+                request_codes=(), performance_tier=None,
+                performance_tier_present=False, is_ftdv=True,
+            ),
+        )
+        self.assertTrue(page._ftdv_mode.isEnabled())
+        with patch.object(page, "_show_error") as error:
+            page._generate_request_code(page._operation_buttons["request_code"])
+        error.assert_called_once_with("Select an FTDv performance mode first")
+        page._ftdv_mode.setCurrentIndex(5)  # 5 Gbps
+        with patch(
+            "fdm_licensing.gui.pages.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ), patch.object(page, "_start_background") as background:
+            page._generate_request_code(page._operation_buttons["request_code"])
+        operation = background.call_args.args[0]
+        page._workflow.configure_universal_plr = Mock(return_value="inspection")
+        operation()
+        page._workflow.configure_universal_plr.assert_called_once_with(
+            page._command, ftdv_mode="5g"
+        )
+        page._workflow.close()
+
     def test_background_completion_is_marshaled_to_gui_thread(self) -> None:
         QApplication.instance() or QApplication([])
         page = CapabilityPage("Test", "Test")
@@ -792,6 +850,20 @@ class ApplicationModelTests(unittest.TestCase):
         )
         self.assertEqual(command.host, "ftd.example.com")
         self.assertIsInstance(command.certificate_store_dir, Path)
+        override = FdmConnectionCommand.from_untrusted(
+            host="ftd.example.com", port=443, username="admin",
+            password="secret", api_version="latest",
+            certificate_store_dir="certificates",
+            allow_unsupported_version=True,
+        )
+        self.assertTrue(override.allow_unsupported_version)
+        with self.assertRaises(ValueError):
+            FdmConnectionCommand.from_untrusted(
+                host="ftd.example.com", port=443, username="admin",
+                password="secret", api_version="latest",
+                certificate_store_dir="certificates",
+                allow_unsupported_version="yes",
+            )
 
     def test_cli_selection_auto_selects_one_and_matches_exact_identifiers(self) -> None:
         accounts = (
@@ -884,6 +956,9 @@ class ApplicationServiceTests(unittest.TestCase):
         manager.delete_fdm_credentials.assert_called_once_with()
     def test_workflow_reuses_and_closes_one_authenticated_fdm_session(self) -> None:
         fdm = object.__new__(FDMClient)
+        fdm._compatibility = SimpleNamespace(system_information={
+            "platformModel": "FPR-1010"
+        })
         fdm.require_api_profile = Mock(return_value=FTD_7_6_PROFILE)
         fdm.get_json = Mock(return_value={"items": []})
         fdm.close = Mock()
@@ -901,6 +976,77 @@ class ApplicationServiceTests(unittest.TestCase):
         factory.assert_called_once()
         enter.assert_called_once()
         fdm.close.assert_called_once()
+
+    def test_ftdv_configuration_requires_mode_and_verifies_returned_tier(self) -> None:
+        service = UniversalPlrWorkflowService()
+        plr = Mock()
+        plr.get_platform_model.return_value = FTDV_PLATFORM_MODEL
+        plr.list_smart_agent_connections.side_effect = [
+            (),
+            ({"connectionType": "UNIVERSAL_PLR", "performanceTier": "FTDv20"},),
+        ]
+        plr.list_plr_request_codes.return_value = (
+            PlrRequestCode("DC-ZNGFWv:device-nonce-02"),
+        )
+        service._fdm = Mock(return_value=nullcontext(plr))
+        command = FdmConnectionCommand.from_untrusted(
+            host="fdm.example.com", port=443, username="admin", password="secret",
+            api_version="latest", certificate_store_dir="certificates",
+        )
+
+        result = service.configure_universal_plr(command, ftdv_mode="3g")
+
+        plr.create_universal_plr_connection.assert_called_once_with(
+            performance_tier="FTDv20", performance_tier_present=True
+        )
+        self.assertTrue(result.is_ftdv)
+        self.assertEqual(result.performance_tier, "FTDv20")
+
+    def test_ftdv_configuration_rejects_missing_mode_before_mutation(self) -> None:
+        service = UniversalPlrWorkflowService()
+        plr = Mock()
+        plr.get_platform_model.return_value = FTDV_PLATFORM_MODEL
+        service._fdm = Mock(return_value=nullcontext(plr))
+        command = FdmConnectionCommand.from_untrusted(
+            host="fdm.example.com", port=443, username="admin", password="secret",
+            api_version="latest", certificate_store_dir="certificates",
+        )
+        with self.assertRaisesRegex(FdmPlrError, "must be selected"):
+            service.configure_universal_plr(command)
+        plr.list_smart_agent_connections.assert_not_called()
+        plr.create_universal_plr_connection.assert_not_called()
+
+    def test_ftdv_configuration_rejects_mismatched_returned_tier(self) -> None:
+        service = UniversalPlrWorkflowService()
+        plr = Mock()
+        plr.get_platform_model.return_value = FTDV_PLATFORM_MODEL
+        plr.list_smart_agent_connections.side_effect = [
+            (),
+            ({"connectionType": "UNIVERSAL_PLR", "performanceTier": "FTDv30"},),
+        ]
+        plr.list_plr_request_codes.return_value = (
+            PlrRequestCode("DC-ZNGFWv:device-nonce-02"),
+        )
+        service._fdm = Mock(return_value=nullcontext(plr))
+        command = FdmConnectionCommand.from_untrusted(
+            host="fdm.example.com", port=443, username="admin", password="secret",
+            api_version="latest", certificate_store_dir="certificates",
+        )
+        with self.assertRaisesRegex(FdmPlrError, "did not apply"):
+            service.configure_universal_plr(command, ftdv_mode="3g")
+
+    def test_physical_configuration_rejects_ftdv_mode_before_mutation(self) -> None:
+        service = UniversalPlrWorkflowService()
+        plr = Mock()
+        plr.get_platform_model.return_value = "FPR-1010"
+        service._fdm = Mock(return_value=nullcontext(plr))
+        command = FdmConnectionCommand.from_untrusted(
+            host="fdm.example.com", port=443, username="admin", password="secret",
+            api_version="latest", certificate_store_dir="certificates",
+        )
+        with self.assertRaisesRegex(FdmPlrError, "cannot be applied"):
+            service.configure_universal_plr(command, ftdv_mode="3g")
+        plr.list_smart_agent_connections.assert_not_called()
 
     def test_initial_return_timeout_confirms_pending_and_recovers_once(self) -> None:
         service = UniversalPlrWorkflowService()
@@ -953,6 +1099,63 @@ class ApplicationServiceTests(unittest.TestCase):
             service.generate_return(command, instance)
         plr.get_return_identity.assert_not_called()
         plr.recover_pending_return_code.assert_not_called()
+
+    def test_final_unregister_timeout_is_reconciled_without_second_delete(self) -> None:
+        service = UniversalPlrWorkflowService(readiness_timeout=5, poll_interval=1)
+        plr = Mock()
+        plr.finalization_connection_id.return_value = "connection-id"
+        plr.delete_smart_agent_connection.side_effect = FDMReadTimeoutError("timed out")
+        plr.list_smart_agent_connections.side_effect = [
+            ({"id": "connection-id"},),
+            (),
+        ]
+        service._fdm = Mock(return_value=nullcontext(plr))
+        command = FdmConnectionCommand.from_untrusted(
+            host="fdm.example.com", port=443, username="admin", password="secret",
+            api_version="latest", certificate_store_dir="certificates",
+        )
+        notices = []
+        with patch(
+            "fdm_licensing.plr_workflow.time.monotonic", side_effect=[0, 0]
+        ), patch("fdm_licensing.plr_workflow.time.sleep") as sleep:
+            service.finalize_return(command, recovery_notice=notices.append)
+        plr.delete_smart_agent_connection.assert_called_once_with("connection-id")
+        self.assertEqual(plr.list_smart_agent_connections.call_count, 2)
+        sleep.assert_called_once_with(1)
+        self.assertEqual(len(notices), 2)
+        self.assertIn("Checking whether", notices[0])
+        self.assertIn("completed unregister", notices[1])
+
+    def test_final_unregister_timeout_expires_without_repeating_delete(self) -> None:
+        service = UniversalPlrWorkflowService(readiness_timeout=1, poll_interval=1)
+        plr = Mock()
+        plr.finalization_connection_id.return_value = "connection-id"
+        plr.delete_smart_agent_connection.side_effect = FDMReadTimeoutError("timed out")
+        plr.list_smart_agent_connections.return_value = ({"id": "connection-id"},)
+        service._fdm = Mock(return_value=nullcontext(plr))
+        command = FdmConnectionCommand.from_untrusted(
+            host="fdm.example.com", port=443, username="admin", password="secret",
+            api_version="latest", certificate_store_dir="certificates",
+        )
+        with patch(
+            "fdm_licensing.plr_workflow.time.monotonic", side_effect=[0, 1]
+        ), self.assertRaisesRegex(FdmPlrError, "delete was not repeated"):
+            service.finalize_return(command)
+        plr.delete_smart_agent_connection.assert_called_once_with("connection-id")
+
+    def test_final_unregister_non_timeout_failure_is_not_reconciled(self) -> None:
+        service = UniversalPlrWorkflowService()
+        plr = Mock()
+        plr.finalization_connection_id.return_value = "connection-id"
+        plr.delete_smart_agent_connection.side_effect = FDMRequestError("HTTP 500")
+        service._fdm = Mock(return_value=nullcontext(plr))
+        command = FdmConnectionCommand.from_untrusted(
+            host="fdm.example.com", port=443, username="admin", password="secret",
+            api_version="latest", certificate_store_dir="certificates",
+        )
+        with self.assertRaisesRegex(FDMRequestError, "HTTP 500"):
+            service.finalize_return(command)
+        plr.list_smart_agent_connections.assert_not_called()
 
     def test_workflow_reuses_and_closes_one_cisco_session_and_caches_accounts(self) -> None:
         tokens = Mock()
@@ -1247,6 +1450,7 @@ class ApplicationServiceTests(unittest.TestCase):
     def test_fdm_authentication_uses_context_manager_cleanup(self) -> None:
         context = MagicMock()
         context.__enter__.return_value.software_version = "7.6.2-329"
+        context.__enter__.return_value.compatibility_override_used = False
         client_factory = Mock(return_value=context)
         command = FdmConnectionCommand.from_untrusted(
             host="ftd.example.com",
@@ -1261,6 +1465,24 @@ class ApplicationServiceTests(unittest.TestCase):
         context.__exit__.assert_called_once()
         self.assertIn("succeeded", result.message)
         self.assertIn("7.6.2-329", result.message)
+        self.assertFalse(
+            client_factory.call_args.kwargs["allow_unsupported_version"]
+        )
+
+    def test_fdm_authentication_reports_explicit_compatibility_override(self) -> None:
+        context = MagicMock()
+        context.__enter__.return_value.software_version = "10.2.0-160"
+        context.__enter__.return_value.compatibility_override_used = True
+        client_factory = Mock(return_value=context)
+        command = FdmConnectionCommand.from_untrusted(
+            host="ftd.example.com", port=443, username="admin",
+            password="secret", api_version="latest",
+            certificate_store_dir="certificates",
+            allow_unsupported_version=True,
+        )
+        result = FdmAuthenticationService(client_factory=client_factory).validate(command)
+        self.assertTrue(client_factory.call_args.kwargs["allow_unsupported_version"])
+        self.assertIn("override", result.message.casefold())
 
     def test_certificate_service_uses_validated_command(self) -> None:
         bootstrap = Mock(return_value=Path("certificates/fdm-ca-bundle.pem"))

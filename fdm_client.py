@@ -151,6 +151,10 @@ class FDMClient:
             Optional path for the debug log file. When omitted and
             debug_logging is enabled, the client writes
             fdm_client_debug.log next to this module.
+        allow_unsupported_version:
+            Explicitly reuse the newest known same-major API profile when the
+            detected minor release is not allowlisted. Disabled by default and
+            never permits a cross-major profile fallback.
     """
 
     def __init__(
@@ -169,6 +173,7 @@ class FDMClient:
         user_agent: str = "secure-fdm-python-client/1.0",
         debug_logging: bool = False,
         log_file: str | Path | None = None,
+        allow_unsupported_version: bool = False,
     ) -> None:
         host = validate_host(host)
         port = validate_port(port)
@@ -185,6 +190,9 @@ class FDMClient:
                 "pinned-certificate hostname override requires certificate verification"
             )
         debug_logging = validate_bool(debug_logging, name="debug_logging")
+        allow_unsupported_version = validate_bool(
+            allow_unsupported_version, name="allow_unsupported_version"
+        )
         username = validate_opaque_value(
             username, name="username", maximum=MAX_CREDENTIAL_LENGTH
         )
@@ -213,6 +221,7 @@ class FDMClient:
         self._token_lock = threading.RLock()
         self._closed = False
         self._compatibility: FdmCompatibility | None = None
+        self._allow_unsupported_version = allow_unsupported_version
         self._debug_logging = debug_logging
         self._logger = logging.getLogger(
             f"{__name__}.{self.__class__.__name__}.{id(self)}"
@@ -248,7 +257,10 @@ class FDMClient:
     def __enter__(self) -> "FDMClient":
         try:
             self.authenticate()
-            self._compatibility = detect_fdm_compatibility(self)
+            self._compatibility = detect_fdm_compatibility(
+                self,
+                allow_unsupported_version=self._allow_unsupported_version,
+            )
             return self
         except Exception:
             self.close()
@@ -428,6 +440,13 @@ class FDMClient:
             self._compatibility.software_version.raw
             if self._compatibility is not None
             else None
+        )
+
+    @property
+    def compatibility_override_used(self) -> bool:
+        """Whether this session reused a same-major profile by explicit override."""
+        return bool(
+            self._compatibility is not None and self._compatibility.override_used
         )
 
     def require_api_profile(self) -> FdmApiProfile:

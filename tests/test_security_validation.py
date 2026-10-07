@@ -85,6 +85,11 @@ class SecurityValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             FDMClient(
                 host="host", username="user", password="secret",
+                verify_certificate=False, allow_unsupported_version="yes",
+            )
+        with self.assertRaises(ValueError):
+            FDMClient(
+                host="host", username="user", password="secret",
                 verify_certificate=False,
                 allow_pinned_certificate_hostname_mismatch=True,
             )

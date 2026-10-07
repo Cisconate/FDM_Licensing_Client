@@ -113,8 +113,16 @@ Using the context manager authenticates on entry and performs best-effort token
 revocation and session cleanup on exit. Immediately after authentication it
 reads `operational/systeminfo/default`, validates the detected FTD software
 release, and selects the matching API profile. The current supported profiles
-are FTD `7.6.x` and `10.0.x`; unsupported or malformed versions fail before a
+are FTD `7.6.x`, `10.0.x`, and `10.1.x`; unsupported or malformed versions fail before a
 capability request is sent.
+
+For controlled testing of a newer minor release, CLI FDM and PLR commands offer
+`--allow-unsupported-version`, and the desktop connection forms offer the same
+compatibility override. The override is off by default, is reported visibly,
+and reuses only the newest known API profile from the same major release. It
+therefore allows a future 10.x minor release to use the validated 10.1 profile,
+but will not apply a 10.x profile to an 11.x device. This option does not make licensing mutations safe
+or imply that the release is officially supported.
 
 ## Cisco Support and Smart Licensing clients
 
@@ -314,9 +322,13 @@ and `install` securely prompts for a previously issued authorization code:
 
 ```bash
 fdm-licensing plr run --host 192.0.2.10 --smart-account example.com --virtual-account Default
+fdm-licensing plr run --host 192.0.2.20 --ftdv-mode 5g --smart-account example.com --virtual-account Default
 fdm-licensing plr inspect --host 192.0.2.10
 fdm-licensing plr reserve --host 192.0.2.10 --smart-account example.com --virtual-account Default
 fdm-licensing plr install --host 192.0.2.10
+
+# Controlled same-major compatibility test on a newer minor release
+fdm-licensing plr inspect --host 192.0.2.10 --allow-unsupported-version
 ```
 
 PLR return is staged across FDM and Cisco and can be run end to end with
@@ -394,11 +406,44 @@ than aggregate account totals. For example, an FPR-1010 reports the entitled,
 in-use, reserved, and currently available quantities for the Firepower 1000
 Threat Defense Universal License. FTDv inventory selection uses the Smart Agent
 `performanceTier` carried from FDM inspection; it does not infer a commercial
-tier from VM CPU or memory. The CSF 1200 lineup (`1210CE`, `1210CP`, `1220CX`,
+tier from VM CPU or memory. Before configuring an FTDv connection, the CLI and
+desktop application require an explicit mode selection. CLI values are
+`variable`, `100m`, `1g`, `3g`, `5g`, `10g`, `16g`, and `unlimited`. Variable
+mode is sent as an explicitly present JSON `null`; fixed modes use the observed
+Smart Agent values `FTDv5` through `FTDv100`, while unlimited uses `FTDvU`.
+The workflow reads the connection back and stops before Cisco reservation if
+FDM did not retain the selected tier. The CSF 1200 lineup (`1210CE`, `1210CP`, `1220CX`,
 `1230`, `1240`, and `1250`) maps to the observed `FPR1200_TD_ULR` inventory tag.
 Every other well-formed but unmapped PID stops before Cisco credential or
 reservation work with one generic unsupported-platform warning; this includes
 platforms that may not run FDM.
+
+## Run logs
+
+Every CLI invocation and desktop application launch creates a private,
+timestamped diagnostic log. The application retains only the five newest run
+logs across both presentations. Normal terminal and GUI status output remains
+concise, while the files record workflow phases, elapsed durations, classified
+failures, and timeout-recovery decisions. Passwords, tokens, HTTP headers and
+bodies, and PLR request, authorization, release, and return codes are never
+written to these logs.
+
+Find the platform-specific directory with:
+
+```bash
+fdm-licensing logs path
+```
+
+The defaults are `~/Library/Logs/FDM Licensing` on macOS,
+`%LOCALAPPDATA%\FDM Licensing\Logs` on Windows, and
+`$XDG_STATE_HOME/fdm-licensing` (or `~/.local/state/fdm-licensing`) on Linux.
+The desktop application also provides **Tools > Open Logs Folder**.
+
+If the final FDM unregister DELETE exceeds its read timeout, the application
+does not repeat the mutation. It polls the Smart Agent connection collection
+for up to the configured readiness window and treats disappearance of the exact
+deleted connection as successful reconciliation. A remaining or different
+connection produces a recoverable error for operator inspection.
 
 ## Automated tests and CI
 

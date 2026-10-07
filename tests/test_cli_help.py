@@ -65,6 +65,12 @@ class CliHelpTests(unittest.TestCase):
         self.assertIn("--virtual-account", help_text)
         self.assertIn("example:", help_text)
 
+    def test_logs_help_exposes_the_log_directory_command(self) -> None:
+        help_text = self._help_text(
+            lambda argv: application_parser().parse_args(["logs", *argv])
+        )
+        self.assertIn("path", help_text)
+
     def test_plr_help_documents_stages_and_keeps_secrets_off_command_line(self) -> None:
         top = self._help_text(
             lambda argv: application_parser().parse_args(["plr", *argv])
@@ -80,6 +86,8 @@ class CliHelpTests(unittest.TestCase):
         self.assertIn("--smart-account", run)
         self.assertIn("--virtual-account", run)
         self.assertIn("--unattended", run)
+        self.assertIn("--allow-unsupported-version", run)
+        self.assertIn("same-major", run)
         self.assertIn("existing trusted", run)
         self.assertIn("FDM certificate", run)
         self.assertIn("prompted when omitted", run)

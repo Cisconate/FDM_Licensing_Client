@@ -24,6 +24,9 @@ RUN_CISCO_LIVE_TESTS=1 python -m unittest -v tests.test_live_cisco_token
 
 # Discover all supported FDM example switches; performs no network request
 python example.py --help
+
+# Show the directory containing the five most recent CLI/GUI run logs
+fdm-licensing logs path
 ```
 
 The direct OAuth check reads credentials from the native OS credential store,

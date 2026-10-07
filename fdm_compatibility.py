@@ -66,9 +66,19 @@ FTD_10_0_PROFILE = FdmApiProfile(
     install_plr_code_path="license/action/installplrcode",
     cancel_plr_reservation_path="license/action/cancelreservation",
 )
+FTD_10_1_PROFILE = FdmApiProfile(
+    name="FTD 10.1",
+    major=10,
+    minor=1,
+    smart_agent_connections_path="license/smartagentconnections",
+    plr_request_codes_path="license/operational/plrrequestcode",
+    install_plr_code_path="license/action/installplrcode",
+    cancel_plr_reservation_path="license/action/cancelreservation",
+)
 SUPPORTED_FDM_PROFILES: tuple[FdmApiProfile, ...] = (
     FTD_7_6_PROFILE,
     FTD_10_0_PROFILE,
+    FTD_10_1_PROFILE,
 )
 
 
@@ -77,6 +87,7 @@ class FdmCompatibility:
     software_version: FtdSoftwareVersion
     profile: FdmApiProfile
     system_information: Mapping[str, Any]
+    override_used: bool = False
 
 
 def parse_software_version(value: object) -> FtdSoftwareVersion:
@@ -98,7 +109,9 @@ def parse_software_version(value: object) -> FtdSoftwareVersion:
     )
 
 
-def detect_fdm_compatibility(client: JsonReader) -> FdmCompatibility:
+def detect_fdm_compatibility(
+    client: JsonReader, *, allow_unsupported_version: bool = False
+) -> FdmCompatibility:
     """Read authenticated system information and select one supported profile."""
     data = client.get_json(SYSTEM_INFORMATION_PATH)
     if not isinstance(data, Mapping):
@@ -107,7 +120,22 @@ def detect_fdm_compatibility(client: JsonReader) -> FdmCompatibility:
     for profile in SUPPORTED_FDM_PROFILES:
         if profile.supports(version):
             return FdmCompatibility(version, profile, dict(data))
+    if allow_unsupported_version:
+        same_major = tuple(
+            profile
+            for profile in SUPPORTED_FDM_PROFILES
+            if profile.major == version.major
+        )
+        if same_major:
+            profile = max(same_major, key=lambda item: item.minor)
+            return FdmCompatibility(version, profile, dict(data), override_used=True)
     supported = ", ".join(f"{item.major}.{item.minor}.x" for item in SUPPORTED_FDM_PROFILES)
+    override_note = (
+        "; no same-major API profile is available for override"
+        if allow_unsupported_version
+        else ""
+    )
     raise FdmCompatibilityError(
         f"FTD {version.raw} is unsupported; supported releases: {supported}"
+        f"{override_note}"
     )

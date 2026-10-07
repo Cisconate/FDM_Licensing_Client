@@ -38,6 +38,7 @@ from fdm_plr_client import (
 from key_manager import CiscoClientCredentials, KeyManager
 
 from .models import FdmConnectionCommand
+from .run_logging import log_event, log_phase
 
 
 class FdmPlrState(str, Enum):
@@ -69,6 +70,31 @@ class FdmPlrInspection:
     request_codes: tuple[PlrRequestCode, ...]
     performance_tier: str | None = None
     performance_tier_present: bool = False
+    platform_model: str = ""
+    is_ftdv: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class FtdvPerformanceMode:
+    key: str
+    label: str
+    performance_tier: str | None
+    sku_order: int
+    tag_marker: str
+
+
+FTDV_PLATFORM_MODEL = "Cisco Secure Firewall Threat Defense for VMware"
+FTDV_PERFORMANCE_MODES = (
+    FtdvPerformanceMode("variable", "Variable", None, 1001, ".FPRV-TD-ULR,"),
+    FtdvPerformanceMode("100m", "100 Mbps", "FTDv5", 5, ".FPRTD-100M-ULR,"),
+    FtdvPerformanceMode("1g", "1 Gbps", "FTDv10", 10, ".FPRTD-1G-ULR,"),
+    FtdvPerformanceMode("3g", "3 Gbps", "FTDv20", 20, ".FPRTD-3G-ULR,"),
+    FtdvPerformanceMode("5g", "5 Gbps", "FTDv30", 30, ".FPRTD-5G-ULR,"),
+    FtdvPerformanceMode("10g", "10 Gbps", "FTDv50", 50, ".FPRTD-10G-ULR,"),
+    FtdvPerformanceMode("16g", "16 Gbps", "FTDv100", 100, ".FPRTD-16G-ULR,"),
+    FtdvPerformanceMode("unlimited", "Unlimited", "FTDvU", 1000, ".FPRV-TD-ULR,"),
+)
+FTDV_PERFORMANCE_MODE_BY_KEY = {mode.key: mode for mode in FTDV_PERFORMANCE_MODES}
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,38 +124,14 @@ PLR_INVENTORY_RULES = (
         "CSF 200 series", r"^CSF-2\d{2}$", None, False, 200,
         ".CSF_200_TD_PLR,", "CSF200 Series FTD PLR",
     ),
-    PlrInventoryRule(
-        "FTDv", r"^NGFWv$", "FTDv5", True, 5,
-        ".FPRTD-100M-ULR,", "FTDv 100 Mbps Universal License",
-    ),
-    PlrInventoryRule(
-        "FTDv", r"^NGFWv$", "FTDv10", True, 10,
-        ".FPRTD-1G-ULR,", "FTDv 1 Gbps Universal License",
-    ),
-    PlrInventoryRule(
-        "FTDv", r"^NGFWv$", "FTDv20", True, 20,
-        ".FPRTD-3G-ULR,", "FTDv 3 Gbps Universal License",
-    ),
-    PlrInventoryRule(
-        "FTDv", r"^NGFWv$", "FTDv30", True, 30,
-        ".FPRTD-5G-ULR,", "FTDv 5 Gbps Universal License",
-    ),
-    PlrInventoryRule(
-        "FTDv", r"^NGFWv$", "FTDv50", True, 50,
-        ".FPRTD-10G-ULR,", "FTDv 10 Gbps Universal License",
-    ),
-    PlrInventoryRule(
-        "FTDv", r"^NGFWv$", "FTDv100", True, 100,
-        ".FPRTD-16G-ULR,", "FTDv 16 Gbps Universal License",
-    ),
-    PlrInventoryRule(
-        "FTDv", r"^NGFWv$", "FTDvU", True, 1000,
-        ".FPRV-TD-ULR,", "Cisco Firepower Virtual Threat Defense Universal License",
-    ),
-    PlrInventoryRule(
-        "FTDv Variable", r"^NGFWv$", None, True, 1001,
-        ".FPRV-TD-ULR,", "Cisco Firepower Virtual Threat Defense Universal License",
-    ),
+    *(PlrInventoryRule(
+        "FTDv" if mode.key != "variable" else "FTDv Variable",
+        r"^NGFWv$", mode.performance_tier, True, mode.sku_order,
+        mode.tag_marker,
+        ("Cisco Firepower Virtual Threat Defense Universal License"
+         if mode.key in {"variable", "unlimited"}
+         else f"FTDv {mode.label} Universal License"),
+    ) for mode in FTDV_PERFORMANCE_MODES),
 )
 
 
@@ -264,6 +266,7 @@ class UniversalPlrWorkflowService:
                     password=command.password, api_version=command.api_version,
                     certificate_store_dir=command.certificate_store_dir,
                     allow_pinned_certificate_hostname_mismatch=True,
+                    allow_unsupported_version=command.allow_unsupported_version,
                 )
                 fdm.__enter__()
                 self._cached_fdm = fdm
@@ -279,6 +282,7 @@ class UniversalPlrWorkflowService:
             api_version=command.api_version,
             certificate_store_dir=command.certificate_store_dir,
             allow_pinned_certificate_hostname_mismatch=True,
+            allow_unsupported_version=command.allow_unsupported_version,
         ) as fdm:
             yield FdmPlrClient(fdm)
 
@@ -315,6 +319,7 @@ class UniversalPlrWorkflowService:
     def inspect_fdm(self, command: FdmConnectionCommand) -> FdmPlrInspection:
         """Read FDM licensing state without changing it."""
         with self._fdm(command) as plr:
+            platform_model = plr.get_platform_model()
             connections = plr.list_smart_agent_connections()
             codes: tuple[PlrRequestCode, ...] = ()
             if self._request_codes_applicable(connections):
@@ -323,7 +328,7 @@ class UniversalPlrWorkflowService:
                 except FDMRequestError as exc:
                     if "unableToGeneratePLRRequestCode" not in str(exc):
                         raise
-        return self._inspection(connections, codes)
+        return self._inspection(connections, codes, platform_model=platform_model)
 
     @staticmethod
     def _request_codes_applicable(
@@ -339,6 +344,8 @@ class UniversalPlrWorkflowService:
     def _inspection(
         connections: tuple[Mapping[str, Any], ...],
         codes: tuple[PlrRequestCode, ...],
+        *,
+        platform_model: str = "",
     ) -> FdmPlrInspection:
         if len(connections) > 1 or len(codes) > 1:
             state = FdmPlrState.AMBIGUOUS
@@ -368,24 +375,75 @@ class UniversalPlrWorkflowService:
             codes,
             performance_tier,
             performance_tier_present,
+            platform_model,
+            platform_model == FTDV_PLATFORM_MODEL,
         )
 
+    @staticmethod
+    def ftdv_mode(mode_key: str) -> FtdvPerformanceMode:
+        """Resolve one already-normalized public mode key."""
+        try:
+            return FTDV_PERFORMANCE_MODE_BY_KEY[mode_key]
+        except (KeyError, TypeError) as exc:
+            raise ValueError("FTDv mode is unknown") from exc
+
+    @staticmethod
+    def validate_ftdv_selection(
+        inspection: FdmPlrInspection, mode_key: str | None
+    ) -> FtdvPerformanceMode | None:
+        """Validate a presentation selection against read-only device state."""
+        mode = (
+            None
+            if mode_key is None
+            else UniversalPlrWorkflowService.ftdv_mode(mode_key)
+        )
+        if inspection.is_ftdv:
+            if mode is None:
+                return None
+            if inspection.state is FdmPlrState.REQUEST_CODE_AVAILABLE and (
+                not inspection.performance_tier_present
+                or inspection.performance_tier != mode.performance_tier
+            ):
+                raise FdmPlrError(
+                    "FTDv already has a PLR request code for a different performance mode"
+                )
+            return mode
+        if mode is not None:
+            raise FdmPlrError("--ftdv-mode can be used only with an FTDv device")
+        return None
+
     def configure_universal_plr(
-        self, command: FdmConnectionCommand
+        self, command: FdmConnectionCommand, *, ftdv_mode: str | None = None
     ) -> FdmPlrInspection:
         """Create or convert the sole Smart Agent connection, then read its code.
 
         This is a mutating operation and callers must obtain explicit confirmation.
         """
         with self._fdm(command) as plr:
+            platform_model = plr.get_platform_model()
+            is_ftdv = platform_model == FTDV_PLATFORM_MODEL
+            selected_mode = None if ftdv_mode is None else self.ftdv_mode(ftdv_mode)
+            if is_ftdv and selected_mode is None:
+                raise FdmPlrError(
+                    "FTDv performance mode must be selected before Universal PLR is configured"
+                )
+            if not is_ftdv and selected_mode is not None:
+                raise FdmPlrError("FTDv performance mode cannot be applied to this platform")
+            selected_tier = selected_mode.performance_tier if selected_mode else None
             connections = plr.list_smart_agent_connections()
             if len(connections) > 1:
                 raise FdmPlrError(
                     "FDM returned multiple Smart Agent connections; configuration is ambiguous"
                 )
             if not connections:
-                plr.create_universal_plr_connection()
-            elif connections[0].get("connectionType") != "UNIVERSAL_PLR":
+                plr.create_universal_plr_connection(
+                    performance_tier=selected_tier,
+                    performance_tier_present=is_ftdv,
+                )
+            elif (
+                connections[0].get("connectionType") != "UNIVERSAL_PLR"
+                or is_ftdv
+            ):
                 connection = connections[0]
                 connection_id = connection.get("id")
                 version = connection.get("version")
@@ -393,7 +451,9 @@ class UniversalPlrWorkflowService:
                     raise FdmPlrError(
                         "Existing Smart Agent connection lacks an id or version"
                     )
-                performance = connection.get("performanceTier")
+                performance = selected_tier if is_ftdv else connection.get(
+                    "performanceTier"
+                )
                 if performance is not None and not isinstance(performance, str):
                     raise FdmPlrError(
                         "Existing Smart Agent connection has an invalid performance tier"
@@ -402,10 +462,23 @@ class UniversalPlrWorkflowService:
                     connection_id=connection_id,
                     version=version,
                     performance_tier=performance,
+                    performance_tier_present=is_ftdv or performance is not None,
                 )
-            return self._wait_for_request_code(plr)
+            return self._wait_for_request_code(
+                plr,
+                platform_model=platform_model,
+                expected_performance_tier=selected_tier,
+                verify_performance_tier=is_ftdv,
+            )
 
-    def _wait_for_request_code(self, plr: FdmPlrClient) -> FdmPlrInspection:
+    def _wait_for_request_code(
+        self,
+        plr: FdmPlrClient,
+        *,
+        platform_model: str = "",
+        expected_performance_tier: str | None = None,
+        verify_performance_tier: bool = False,
+    ) -> FdmPlrInspection:
         """Poll read-only state while FDM applies a previously submitted mutation."""
         deadline = time.monotonic() + self._readiness_timeout
         while True:
@@ -421,8 +494,17 @@ class UniversalPlrWorkflowService:
                 except FDMRequestError as exc:
                     if "unableToGeneratePLRRequestCode" not in str(exc):
                         raise
-            inspection = self._inspection(connections, codes)
+            inspection = self._inspection(
+                connections, codes, platform_model=platform_model
+            )
             if inspection.state is FdmPlrState.REQUEST_CODE_AVAILABLE:
+                if verify_performance_tier and (
+                    not inspection.performance_tier_present
+                    or inspection.performance_tier != expected_performance_tier
+                ):
+                    raise FdmPlrError(
+                        "FDM did not apply the selected FTDv performance mode"
+                    )
                 return inspection
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -517,9 +599,10 @@ class UniversalPlrWorkflowService:
     ) -> AuthorizationHandoff:
         """Perform the sole CSSM reservation mutation and retain its code in memory."""
         with self._cisco() as licensing:
-            result: PlrAuthorization = licensing.reserve_universal_plr(
-                selection, reservation_code
-            )
+            with log_phase("reservation.cisco_reserve"):
+                result: PlrAuthorization = licensing.reserve_universal_plr(
+                    selection, reservation_code
+                )
         return AuthorizationHandoff(
             authorization_code=result.authorization_code,
             reservation_code=result.reservation_code,
@@ -531,7 +614,8 @@ class UniversalPlrWorkflowService:
     ) -> PlrInstallResult:
         """Perform the sole FDM authorization installation mutation."""
         with self._fdm(command) as plr:
-            return plr.install_authorization_code(authorization_code)
+            with log_phase("reservation.fdm_install"):
+                return plr.install_authorization_code(authorization_code)
 
     def return_preflight(
         self, command: FdmConnectionCommand, selection: AccountSelection
@@ -556,10 +640,55 @@ class UniversalPlrWorkflowService:
         with self._fdm(command) as plr:
             return plr.get_return_identity(allow_pending=True)
 
-    def finalize_return(self, command: FdmConnectionCommand) -> None:
-        """Perform the final FDM unregister mutation after Cisco completion."""
+    def finalize_return(
+        self,
+        command: FdmConnectionCommand,
+        *,
+        recovery_notice: Callable[[str], None] | None = None,
+    ) -> None:
+        """Finalize unregister once and reconcile a timed-out response read-only."""
         with self._fdm(command) as plr:
-            plr.finalize_return()
+            connection_id = plr.finalization_connection_id()
+            try:
+                with log_phase("return.fdm_unregister"):
+                    plr.delete_smart_agent_connection(connection_id)
+            except FDMReadTimeoutError as timeout_error:
+                log_event("return.fdm_unregister.read_timeout")
+                if recovery_notice is not None:
+                    recovery_notice(
+                        "FDM did not respond before the timeout. Checking whether "
+                        "unregister completed."
+                    )
+                deadline = time.monotonic() + self._readiness_timeout
+                while True:
+                    try:
+                        connections = plr.list_smart_agent_connections()
+                    except FDMReadTimeoutError:
+                        connections = None
+                    if connections is not None:
+                        identifiers = tuple(item.get("id") for item in connections)
+                        if connection_id not in identifiers:
+                            if identifiers:
+                                raise FdmPlrError(
+                                    "FDM returned a different Smart Agent connection "
+                                    "while reconciling unregister; no delete was repeated"
+                                ) from timeout_error
+                            log_event("return.fdm_unregister.reconciled")
+                            if recovery_notice is not None:
+                                recovery_notice(
+                                    "FDM completed unregister after the original "
+                                    "request timed out."
+                                )
+                            return
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise FdmPlrError(
+                            "Cisco return completed, but FDM unregister could not be "
+                            f"confirmed within {self._readiness_timeout:g} seconds. "
+                            "The delete was not repeated; inspect FDM before resuming "
+                            "finalization."
+                        ) from timeout_error
+                    time.sleep(min(self._poll_interval, remaining))
 
     def generate_return(
         self,
@@ -573,8 +702,10 @@ class UniversalPlrWorkflowService:
             raise ValueError("instance must be a ProductInstance")
         with self._fdm(command) as plr:
             try:
-                result: PlrReturnCode = plr.generate_return_code()
+                with log_phase("return.fdm_cancel"):
+                    result: PlrReturnCode = plr.generate_return_code()
             except FDMReadTimeoutError as timeout_error:
+                log_event("return.fdm_cancel.read_timeout")
                 if recovery_notice is not None:
                     recovery_notice(
                         "FDM did not respond before the timeout. Checking whether "
@@ -598,7 +729,8 @@ class UniversalPlrWorkflowService:
                         "FDM started the PLR return. Resuming with the existing code."
                     )
                 try:
-                    result = plr.recover_pending_return_code()
+                    with log_phase("return.code_recovery"):
+                        result = plr.recover_pending_return_code()
                 except (FDMRequestError, FdmPlrError, ValueError) as recovery_error:
                     raise FdmPlrError(
                         "FDM started the PLR return, but its return code could not "
@@ -626,9 +758,10 @@ class UniversalPlrWorkflowService:
     ) -> PlrReturnResult:
         """Perform the sole Cisco v3 product-instance removal mutation."""
         with self._cisco() as licensing:
-            result = licensing.return_universal_plr(
-                selection, instance, return_code
-            )
+            with log_phase("return.cisco_remove"):
+                result = licensing.return_universal_plr(
+                    selection, instance, return_code
+                )
             deadline = time.monotonic() + self._readiness_timeout
             while licensing.product_instance_exists(selection, instance):
                 remaining = deadline - time.monotonic()

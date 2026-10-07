@@ -11,6 +11,8 @@ from PySide6.QtCore import QThreadPool, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -42,6 +44,7 @@ from cisco_support_api_client import AccountSelection
 from fdm_certificate_store import certificate_bundle_path
 from key_manager import CiscoClientCredentials, CredentialsNotFoundError, KeyManager
 from fdm_licensing.plr_workflow import (
+    FTDV_PERFORMANCE_MODES,
     FdmPlrState,
     UnsupportedPlrDeviceError,
     UniversalPlrWorkflowService,
@@ -54,6 +57,7 @@ from fdm_licensing.services import (
     FdmAuthenticationService,
     FdmCertificateService,
 )
+from fdm_licensing.run_logging import log_event
 
 from .workers import GuiThreadRelay, ServiceWorker
 from .progress import ActivityPanel
@@ -163,9 +167,14 @@ class CapabilityPage(QWidget):
         self._layout.addWidget(self._status)
 
     def _show_result(self, result: OperationResult) -> None:
+        log_event(
+            "gui.operation_completed",
+            title=getattr(result, "title", "operation"),
+        )
         self._status.setText(result.message)
 
     def _show_error(self, message: str) -> None:
+        log_event("gui.operation_failed")
         self._status.setText(f"Operation failed: {message}")
 
     def _run(
@@ -196,13 +205,16 @@ class CapabilityPage(QWidget):
     ) -> None:
         """Run work off-thread while universally reporting visible GUI activity."""
         worker = ServiceWorker(operation)
+        log_event("gui.background_started", activity=activity_title)
 
         def report_success(result: object) -> None:
+            log_event("gui.background_completed", activity=activity_title)
             if self._activity_job is worker:
                 self._activity.succeed()
             succeeded(result)
 
         def report_failure(message: str) -> None:
+            log_event("gui.background_failed", activity=activity_title)
             if self._activity_job is worker:
                 self._activity.fail()
             failed(message)
@@ -285,6 +297,7 @@ class WorkflowPage(CapabilityPage):
         self._request_code = None
         self._performance_tier = None
         self._performance_tier_present = False
+        self._is_ftdv = False
         self._selection = None
         self._account_action = "reserve"
         self._code_mode = "authorization"
@@ -306,6 +319,14 @@ class WorkflowPage(CapabilityPage):
         self._password.setEchoMode(QLineEdit.EchoMode.Password)
         self._api_version = QLineEdit("latest")
         self._certificate_dir = QLineEdit("certificates")
+        self._version_override = QCheckBox(
+            "Allow unsupported minor release using the newest same-major profile"
+        )
+        self._ftdv_mode = QComboBox()
+        self._ftdv_mode.addItem("Select after inspecting an FTDv", None)
+        for mode in FTDV_PERFORMANCE_MODES:
+            self._ftdv_mode.addItem(mode.label, mode.key)
+        self._ftdv_mode.setEnabled(False)
         self._certificate_dir.textChanged.connect(
             lambda _text: self._update_certificate_status()
         )
@@ -330,6 +351,8 @@ class WorkflowPage(CapabilityPage):
         form.addRow("Password", self._password)
         form.addRow("API version", self._api_version)
         form.addRow("Certificate directory", self._certificate_dir)
+        form.addRow("Compatibility override", self._version_override)
+        form.addRow("FTDv performance mode", self._ftdv_mode)
         self._layout.addLayout(form)
 
         self._credential_status = QLabel("")
@@ -629,6 +652,7 @@ class WorkflowPage(CapabilityPage):
             username=username, password=password,
             api_version=self._api_version.text(),
             certificate_store_dir=self._certificate_dir.text(),
+            allow_unsupported_version=self._version_override.isChecked(),
         )
         self._command = command
         self._password.clear()
@@ -686,6 +710,9 @@ class WorkflowPage(CapabilityPage):
         self._request_code = None
         self._performance_tier = None
         self._performance_tier_present = False
+        self._is_ftdv = False
+        self._ftdv_mode.setCurrentIndex(0)
+        self._ftdv_mode.setEnabled(False)
         self._update_workflow_controls()
         bundle = certificate_bundle_path(command.certificate_store_dir)
         if not bundle.is_file():
@@ -777,26 +804,55 @@ class WorkflowPage(CapabilityPage):
         button.setEnabled(True)
         self._performance_tier = inspection.performance_tier
         self._performance_tier_present = inspection.performance_tier_present
+        self._is_ftdv = getattr(inspection, "is_ftdv", False)
+        self._ftdv_mode.setEnabled(
+            self._is_ftdv and inspection.state is not FdmPlrState.REQUEST_CODE_AVAILABLE
+        )
+        self._ftdv_mode.setCurrentIndex(0)
+        if self._is_ftdv and inspection.performance_tier_present:
+            for index, mode in enumerate(FTDV_PERFORMANCE_MODES, 1):
+                if mode.performance_tier == inspection.performance_tier:
+                    self._ftdv_mode.setCurrentIndex(index)
+                    break
         if inspection.state is FdmPlrState.REQUEST_CODE_AVAILABLE:
             self._request_code = inspection.request_codes[0].code
-        self._status.setText(f"FDM Universal PLR state: {inspection.state.value}.")
+        override_warning = (
+            " Compatibility override is active for this unsupported release."
+            if self._command is not None
+            and getattr(self._command, "allow_unsupported_version", False)
+            else ""
+        )
+        self._status.setText(
+            f"FDM Universal PLR state: {inspection.state.value}."
+            f"{override_warning}"
+        )
         self._update_workflow_controls()
 
     def _generate_request_code(self, button: QPushButton) -> None:
         if self._command is None:
             self._show_error("Inspect FDM first")
             return
+        selected_mode = self._ftdv_mode.currentData() if self._is_ftdv else None
+        if self._is_ftdv and selected_mode is None:
+            self._show_error("Select an FTDv performance mode first")
+            return
+        mode_suffix = (
+            f" using {self._ftdv_mode.currentText()} mode"
+            if selected_mode is not None else ""
+        )
         answer = QMessageBox.question(
             self,
             "Configure Universal PLR",
-            "Enable Universal PLR on FDM and wait for a request code?",
+            f"Enable Universal PLR on FDM{mode_suffix} and wait for a request code?",
         )
         if answer != QMessageBox.StandardButton.Yes:
             self._status.setText("Request-code generation cancelled.")
             return
         button.setEnabled(False)
         self._start_background(
-            lambda: self._workflow.configure_universal_plr(self._command),
+            lambda: self._workflow.configure_universal_plr(
+                self._command, ftdv_mode=selected_mode
+            ),
             lambda value: self._request_code_generated(button, value),
             lambda message: (self._show_error(message), self._generation_failed(button)),
             activity_title="Generating Universal PLR request code",
@@ -1052,7 +1108,9 @@ class WorkflowPage(CapabilityPage):
             )
             return
         self._start_background(
-            lambda: self._workflow.finalize_return(self._command),
+            lambda: self._workflow.finalize_return(
+                self._command, recovery_notice=self.recovery_notice.emit
+            ),
             lambda _value: self._return_finalized(button, result),
             lambda message: (self._show_error(message), button.setEnabled(True)),
             activity_title="Finalizing PLR unregister on FDM",
@@ -1398,6 +1456,9 @@ class FdmConnectionPage(CapabilityPage):
         self._password.setEchoMode(QLineEdit.EchoMode.Password)
         self._api_version = QLineEdit("latest")
         self._certificate_dir = QLineEdit("certificates")
+        self._version_override = QCheckBox(
+            "Allow unsupported minor release using the newest same-major profile"
+        )
         self._stored_fdm_credentials = None
         self._field_overrides = {
             "host": False, "port": False, "username": False, "password": False,
@@ -1421,6 +1482,7 @@ class FdmConnectionPage(CapabilityPage):
         form.addRow("Password", self._password)
         form.addRow("API version", self._api_version)
         form.addRow("Certificate directory", self._certificate_dir)
+        form.addRow("Compatibility override", self._version_override)
         self._layout.addLayout(form)
 
         controls = QHBoxLayout()
@@ -1520,6 +1582,7 @@ class FdmConnectionPage(CapabilityPage):
                 password=password,
                 api_version=self._api_version.text(),
                 certificate_store_dir=self._certificate_dir.text(),
+                allow_unsupported_version=self._version_override.isChecked(),
             )
         except ValueError as exc:
             self._show_error(str(exc))
