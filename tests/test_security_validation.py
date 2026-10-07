@@ -1,15 +1,19 @@
 """Boundary-focused tests for hostile and malformed external input."""
 
 import math
+import ssl
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock, patch
 
 import requests
 
 from cisco_support_api_client import CiscoPlrError, CiscoPlrReservationClient
-from fdm_certificate_store import certificate_bundle_path
+from fdm_certificate_store import (
+    bootstrap_certificate_store,
+    certificate_bundle_path,
+)
 from fdm_client import FDMClient, FDMReadTimeoutError
 from security_validation import (
     encode_json_payload,
@@ -74,6 +78,37 @@ class SecurityValidationTests(unittest.TestCase):
         for value in ("../bundle.pem", "subdir/bundle.pem", "..", "bundle\n.pem"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 certificate_bundle_path("certificates", bundle_name=value)
+
+    def test_certificate_bootstrap_requires_tls_1_2_or_newer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = MagicMock()
+            tls_socket = context.wrap_socket.return_value.__enter__.return_value
+            tls_socket.getpeercert.return_value = b"certificate"
+
+            with (
+                patch(
+                    "fdm_certificate_store.ssl.create_default_context",
+                    return_value=context,
+                ),
+                patch("fdm_certificate_store.socket.create_connection"),
+                patch(
+                    "fdm_certificate_store.ssl.DER_cert_to_PEM_cert",
+                    return_value=(
+                        "-----BEGIN CERTIFICATE-----\n"
+                        "test\n"
+                        "-----END CERTIFICATE-----\n"
+                    ),
+                ),
+            ):
+                bootstrap_certificate_store(
+                    host="fdm.example.com",
+                    certificate_store_dir=directory,
+                )
+
+            self.assertEqual(
+                context.minimum_version,
+                ssl.TLSVersion.TLSv1_2,
+            )
 
     def test_fdm_constructor_rejects_invalid_configuration(self) -> None:
         with self.assertRaises(ValueError):

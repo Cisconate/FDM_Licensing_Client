@@ -68,8 +68,8 @@ def bootstrap_certificate_store(
     timeout: float = 5.0,
 ) -> Path:
     """
-    Fetch the server certificate over an intentionally unverified TLS session
-    and save it into a local PEM bundle.
+    Fetch the server certificate over an intentionally unverified TLS 1.2-or-
+    newer session and save it into a local PEM bundle.
 
     This is intended for initial trust establishment against a device that
     presents a self-signed certificate before the normal verification flow is
@@ -94,6 +94,7 @@ def bootstrap_certificate_store(
     bundle_path = store_dir / bundle_name
 
     context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
 
