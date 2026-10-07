@@ -46,6 +46,10 @@ On Windows PowerShell, activate the environment with:
 
 ## Quick start: FDM
 
+For initial Cisco API application registration, secure credential setup, FDM
+certificate trust, and Universal PLR readiness checks, begin with
+[FIRST_TIME_SETUP.md](FIRST_TIME_SETUP.md).
+
 Display every supported option and its environment-variable fallback before
 connecting to a device:
 
